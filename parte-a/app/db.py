@@ -64,6 +64,27 @@ CREATE TABLE IF NOT EXISTS repeticiones (
     mismo_contenido INTEGER NOT NULL CHECK (mismo_contenido IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_repeticiones_event_id ON repeticiones(event_id);
+
+CREATE TABLE IF NOT EXISTS leads (
+    lead_id       TEXT PRIMARY KEY,
+    evento_id     INTEGER NOT NULL UNIQUE REFERENCES eventos(id),
+    nombre        TEXT NOT NULL DEFAULT '',
+    clave_nombre  TEXT NOT NULL DEFAULT '',
+    telefono_e164 TEXT,
+    email         TEXT,
+    ciudad        TEXT,
+    servicio      TEXT,
+    mensaje       TEXT,
+    plataforma    TEXT,
+    campana       TEXT,
+    form_id       TEXT,
+    advertencias  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(advertencias)),
+    creado_at     TEXT NOT NULL,
+    CHECK (telefono_e164 IS NOT NULL OR email IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono_e164);
+CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
+CREATE INDEX IF NOT EXISTS idx_leads_clave_nombre ON leads(clave_nombre);
 """
 
 
@@ -95,6 +116,11 @@ def inicializar(ruta: Path) -> None:
 
 def campos_contrato(fila: sqlite3.Row) -> dict:
     return {c: fila[c] for c in CAMPOS_CONTRATO}
+
+
+def campos_estado(fila: sqlite3.Row) -> dict:
+    """Los 8 campos del contrato más el extra recepcion_id."""
+    return {**campos_contrato(fila), "recepcion_id": fila["recepcion_id"]}
 
 
 @dataclass
@@ -161,11 +187,11 @@ def registrar_recepcion(
 
 def estado_por_event_id(con: sqlite3.Connection, event_id: str) -> dict | None:
     fila = con.execute("SELECT * FROM eventos WHERE event_id = ?", (event_id,)).fetchone()
-    return campos_contrato(fila) if fila else None
+    return campos_estado(fila) if fila else None
 
 
 def estados_desde(con: sqlite3.Connection, desde_utc: str) -> list[dict]:
     filas = con.execute(
         "SELECT * FROM eventos WHERE received_at >= ? ORDER BY id", (desde_utc,)
     ).fetchall()
-    return [campos_contrato(f) for f in filas]
+    return [campos_estado(f) for f in filas]

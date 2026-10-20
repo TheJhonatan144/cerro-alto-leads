@@ -34,9 +34,9 @@ Leyenda: **[R]** requisito confirmado · **[D]** decisión propia · **[S]** sup
 - **[R]** Los 8 campos del contrato (confirmados por el enunciado) son: `event_id, estado, ruta, lead_id, duplicado_de, telefono_e164, email, motivo`.
 - **[S]** `?desde=` filtra por `received_at` (momento en que **nosotros** recibimos el evento), **no** por `created_at` del origen, que no está validado y puede venir mal o en otra zona.
 - **[D]** `desde` acepta ISO 8601 con `Z` o desplazamiento; sin zona = UTC; se convierte a UTC. Un `+` sin codificar en la URL llega como espacio (`...T10:00:00 05:00`) y se interpreta como `+05:00`. Formato inválido → 400.
-- **[D]** Orden de llegada = `ORDER BY id`. Respuesta = arreglo JSON de objetos con los 8 campos.
+- **[D]** Orden de llegada = `ORDER BY id`. Respuesta = arreglo JSON de objetos con los 8 campos más `recepcion_id` (ver Bloque 2a).
 - **[D]** `event_id` y `desde` a la vez → 400 (son consultas distintas). Ninguno → 400. `event_id` vacío → 400. Desconocido → 404.
-- **[L]** Dos eventos sin `event_id` salen indistinguibles en `?desde=` (el contrato no incluye `recepcion_id`).
+- ~~**[L]** Dos eventos sin `event_id` salen indistinguibles en `?desde=`.~~ Resuelto en el Bloque 2a con el campo extra `recepcion_id`.
 
 ### Logs
 - **[R]** Sin datos personales: solo `recepcion_id`, `event_id`, estado y el *tipo* de error de SQLite.
@@ -49,6 +49,53 @@ Leyenda: **[R]** requisito confirmado · **[D]** decisión propia · **[S]** sup
 - **[D]** Los sustitutos UTF-16 sueltos en `event_id` y `created_at` (p. ej. `"evt_\ud800"`) se escapan como texto (`evt_\\ud800`) con `backslashreplace`, de forma determinista, así el reenvío sigue siendo idempotente.
 - **[D]** Si falla algo que no es SQLite al interpretar o insertar el evento, se guarda el cuerpo crudo como `rechazado`, con `event_id NULL` y motivo "No se pudo interpretar el evento", y se responde 2xx. Solo si ese guardado también falla se responde 503. En el log se registra únicamente el tipo de error.
 - **[D]** Un `desde` válido pero fuera de rango al convertirlo a UTC (p. ej. `0001-01-01T00:00:00+01:00`) responde 400.
+- **[L]** Colisión del escape: un `event_id` que llegue literalmente como el texto `evt_\ud800` (con barra invertida; en JSON `"evt_\\ud800"`) queda igual que uno con el sustituto real `"evt_\ud800"`, y se trataría como el mismo evento. Es muy improbable en la práctica; se acepta.
 - **[L]** Se requiere Python 3.11 o superior: `datetime.fromisoformat` acepta el sufijo `Z` desde 3.11.
-- **[L]** No hay validación, normalización, clasificación ni procesador de trabajos: todo queda `pendiente` (Bloque 2+).
 - **[L]** `TestClient` de Starlette avisa de deprecación con `httpx`; no afecta a los tests.
+
+## Bloque 2a · Normalización, validación y duplicados de negocio
+
+Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`procesar_evento(con, evento_id)`). **[L]** Aún no hay hilo trabajador que lo llame, ni API de pacientes, LLM, avisos o reintentos: se prueba llamándolo directamente. La tabla `trabajos` no se actualiza todavía.
+
+### Tipo de evento y estructura
+- **[R]** `event_type` ausente o distinto de `"lead.created"` (comparación exacta) → `rechazado`, motivo "Tipo de evento no soportado".
+- **[R]** `lead` ausente o que no es un objeto → `rechazado`, motivo "El evento no trae datos del lead".
+- **[D]** Si el cuerpo crudo de un evento `pendiente` no se puede reinterpretar como objeto (no debería ocurrir, ya se filtró en la recepción) → `rechazado`, motivo "No se pudo interpretar el evento".
+- **[D]** `source` ausente o que no es un objeto se trata como vacío: no rechaza, solo genera advertencias.
+
+### Teléfono
+- **[R]** Se quitan espacios, guiones y paréntesis; región por defecto EC. Se acepta `str` o `int` (no booleano); otro tipo → inválido. Tras limpiar solo se admiten `+` inicial y dígitos ASCII (así `"abc"` → None sin depender de la librería).
+- **[R]** 12 dígitos sin `+` que empiezan con `593` = prefijo de país sin `+` (el entero `593987650021` → `+593987650021`).
+- **[R]** El número se guarda en E.164 solo si `phonenumbers.is_valid_number` lo da por válido; `"1111111111"` → None.
+- **[Probado]** `+1 (305) 555-0142`: con `phonenumbers==9.0.41`, `is_valid_number=True` → `+13055550142`. Por eso **no** se implementó la vía de respaldo (`is_possible_number` + advertencia `telefono_no_verificado`): no hace falta para los datos dados, y aceptar números solo "posibles" relajaría la validación. Si una versión futura de la librería lo diera por inválido, el evento 04 se aceptaría igual por su correo, con la advertencia `telefono_invalido`.
+
+### Correo, nombre, textos y catálogos
+- **[R]** Correo: solo `str`; recorte y minúsculas; regex simple (una `@`, sin espacios, dominio con punto) y máximo 254 caracteres. Sin librerías de validación de dominios.
+- **[D]** Un correo con sustitutos UTF-16 sueltos es inválido. En nombre, ciudad, mensaje, etc. se escapan con `backslashreplace`, como en el Bloque 1.
+- **[R]** Nombre con espacios colapsados (`""` si no es texto). `clave_nombre`: minúsculas, sin tildes (NFKD), espacios colapsados; solo para comparar.
+- **[R]** Texto: `str` recortado; lista de `str` unida con `", "` (el evento 06 trae `city: ["Quito"]` → `"Quito"`). **[D]** Vacío tras recortar → None.
+- **[R]** Servicios, plataformas y campañas conocidos están en constantes (`normalizar.py`), tomados de los payloads de ejemplo. Se comparan con `clave_nombre` y se guarda el valor canónico. Un valor desconocido no rechaza: se guarda tal cual y se añade una advertencia.
+
+### Rechazo por contacto y advertencias
+- **[R]** Ni teléfono ni correo válidos → `rechazado`, con un motivo que indica qué falló sin copiar valores, p. ej. "Sin teléfono ni correo válidos: teléfono inválido, correo ausente". Ausente = falta, `null` o texto vacío; inválido = cualquier otro valor que no se pudo normalizar.
+- **[R]** Nombre vacío y mensaje vacío o ausente **no** rechazan.
+- **[D]** Advertencias posibles (JSON en `leads.advertencias`): `telefono_ausente`, `telefono_invalido`, `correo_ausente`, `correo_invalido`, `nombre_vacio`, `mensaje_vacio`, `ciudad_ausente`, `servicio_ausente`, `servicio_desconocido`, `plataforma_ausente`, `plataforma_desconocida`, `campana_ausente`, `campana_desconocida`.
+- **[R]** Aceptado: se guardan `telefono_e164` y `email` normalizados en `eventos` (None si inválido), se crea la fila en `leads` con `lead_id` nuevo (uuid4) y se rellena `eventos.lead_id`. El estado queda `pendiente` hasta las etapas siguientes. El evento 08 (spam evidente) se acepta aquí por su correo válido; filtrarlo es tarea de la clasificación.
+
+### Duplicados de negocio
+- **[R]** Un evento es duplicado de uno anterior si coincide el teléfono normalizado **o** el correo normalizado, **y** coincide `clave_nombre` (no vacía en ambos), **y** el original se recibió dentro de los `DUPLICADO_VENTANA_DIAS` días (por defecto 7) anteriores a la recepción del actual, **y** el original no es `rechazado` ni `duplicado`.
+- **[R]** Compartir solo teléfono o solo correo con otro nombre **no** es duplicado. Si cualquiera de los dos nombres está vacío, **no** es duplicado.
+- **[R]** Se toma el original más antiguo (`ORDER BY received_at, id`). Duplicado → `estado='duplicado'`, `duplicado_de` = `event_id` del original (o su `recepcion_id` si no tiene), `lead_id` = el del original, motivo "Mismo contacto y nombre que un evento anterior (<received_at del original>)", sin datos personales. No crea fila en `leads`.
+- **[D]** El duplicado también guarda su `telefono_e164` y `email` normalizados en `eventos`.
+- **[D]** Ventana inclusiva: `received_at` del original ≥ `received_at` actual − N días. "Anterior" = `id` menor (orden de llegada). Solo se buscan originales entre eventos con fila en `leads`, es decir, aceptados.
+- **[L]** El resultado depende del orden de procesamiento: si un evento posterior se procesa antes que uno anterior, el anterior no lo verá como original. El trabajador del bloque siguiente debe procesar en orden de llegada.
+- **[L]** Si la variable `DUPLICADO_VENTANA_DIAS` no es un entero o es negativa, `procesar_evento` falla con `ValueError` en lugar de usar el valor por defecto.
+
+### Idempotencia del procesamiento
+- **[R]** `procesar_evento` corre en una sola transacción `BEGIN IMMEDIATE`. Solo actúa si el evento está `pendiente` y sin `lead_id`; si no, devuelve el estado actual sin tocar nada. Además, `leads.evento_id` es `UNIQUE`: procesar dos veces el mismo evento no puede crear dos filas.
+
+### Campo extra en /leads/estado
+- **[D]** `GET /leads/estado` (tanto `?event_id=` como cada elemento de `?desde=`) devuelve los 8 campos del contrato más `recepcion_id`. Los 8 campos se mantienen sin cambios; el extra permite distinguir eventos sin `event_id`.
+
+### Base de datos
+- **[D]** Nueva tabla `leads` (sin migraciones: hay que borrar `data/leads.db*` antes de arrancar). `CHECK` de que haya teléfono o correo y de que `advertencias` sea JSON válido; índices por teléfono, correo y `clave_nombre`. La tabla `eventos` no cambió.

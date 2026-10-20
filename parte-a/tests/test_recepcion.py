@@ -246,7 +246,8 @@ def test_dos_eventos_sin_event_id(cliente, ruta_db):
     lista = r.json()
     assert len(lista) == 2
     assert all(e["event_id"] is None and e["estado"] == "pendiente" for e in lista)
-    assert set(lista[0]) == set(db.CAMPOS_CONTRATO)
+    assert set(lista[0]) == set(db.CAMPOS_CONTRATO) | {"recepcion_id"}
+    assert lista[0]["recepcion_id"] != lista[1]["recepcion_id"]
 
 
 # 7
