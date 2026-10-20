@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS leads (
 CREATE INDEX IF NOT EXISTS idx_leads_telefono ON leads(telefono_e164);
 CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
 CREATE INDEX IF NOT EXISTS idx_leads_clave_nombre ON leads(clave_nombre);
+
+-- Mensajes de eventos marcados como duplicado, ligados al lead original.
+CREATE TABLE IF NOT EXISTS lead_mensajes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id     TEXT NOT NULL REFERENCES leads(lead_id),
+    evento_id   INTEGER NOT NULL UNIQUE REFERENCES eventos(id),
+    recibido_at TEXT NOT NULL,
+    servicio    TEXT,
+    mensaje     TEXT,
+    creado_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lead_mensajes_lead ON lead_mensajes(lead_id);
 """
 
 

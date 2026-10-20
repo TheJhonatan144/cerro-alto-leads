@@ -16,7 +16,10 @@ CAMPANAS = ("Sonrisa Blanca", "Ortodoncia sin Excusas", "Chequeo Anual")
 
 _SEPARADORES_TELEFONO = re.compile(r"[\s\-()]")
 _TELEFONO_LIMPIO = re.compile(r"\+?[0-9]+")  # [0-9], no \d: \d admite dígitos de otros alfabetos
-_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+_EMAIL_LOCAL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}")
+_EMAIL_ETIQUETA = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")  # 1-63, sin '-' en los bordes
+_EMAIL_TLD = re.compile(r"[a-z]{2,}|xn--[a-z0-9-]+")
+EMAIL_DOMINIO_MAX = 253
 
 
 def texto_seguro(s: str) -> str:
@@ -48,14 +51,26 @@ def normalizar_telefono(valor) -> str | None:
 
 
 def normalizar_email(valor) -> str | None:
+    """Correo ASCII estricto, recortado y en minúsculas, o None. Sin consultar dominios."""
     if not isinstance(valor, str):
         return None
-    texto = valor.strip().lower()
-    if len(texto) > EMAIL_MAX or not _EMAIL.fullmatch(texto):
+    recortado = valor.strip()
+    # ASCII se comprueba antes de .lower(): "K" (signo Kelvin) pasaría a "k" ASCII.
+    if not recortado.isascii():
         return None
-    try:
-        texto.encode("utf-8")
-    except UnicodeEncodeError:
+    texto = recortado.lower()
+    if len(texto) > EMAIL_MAX or texto.count("@") != 1:
+        return None
+    local, dominio = texto.split("@")
+    # Las regex solo admiten caracteres imprimibles: excluyen controles y espacios.
+    if not _EMAIL_LOCAL.fullmatch(local) or local[0] == "." or local[-1] == "." or ".." in local:
+        return None
+    if len(dominio) > EMAIL_DOMINIO_MAX:
+        return None
+    etiquetas = dominio.split(".")
+    if len(etiquetas) < 2 or not all(_EMAIL_ETIQUETA.fullmatch(e) for e in etiquetas):
+        return None
+    if not _EMAIL_TLD.fullmatch(etiquetas[-1]):
         return None
     return texto
 

@@ -101,8 +101,14 @@ def _procesar(con, ev, ventana: int) -> None:
             """UPDATE eventos SET estado = 'duplicado', duplicado_de = ?, lead_id = ?,
                                   telefono_e164 = ?, email = ?, motivo = ?
                WHERE id = ?""",
-            (original["event_id"] or original["recepcion_id"], original["lead_id"], telefono, email,
+            (original["event_id"], original["lead_id"], telefono, email,
              f"Mismo contacto y nombre que un evento anterior ({original['received_at']})", ev["id"]),
+        )
+        # El duplicado no crea lead, pero su mensaje y servicio se conservan en el original.
+        con.execute(
+            """INSERT INTO lead_mensajes (lead_id, evento_id, recibido_at, servicio, mensaje, creado_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (original["lead_id"], ev["id"], ev["received_at"], servicio, mensaje, db.ahora_utc()),
         )
         return
 
@@ -122,15 +128,18 @@ def _procesar(con, ev, ventana: int) -> None:
 
 
 def _buscar_original(con, ev, telefono, email, clave, ventana: int):
-    """Evento aceptado más antiguo, anterior y dentro de la ventana, con mismo nombre y contacto."""
+    """Evento aceptado más antiguo, anterior y dentro de la ventana, con mismo nombre y contacto.
+
+    Solo cuentan originales con event_id, para que duplicado_de sea siempre consultable.
+    """
     if not clave or (telefono is None and email is None):
         return None
     recibido = datetime.strptime(ev["received_at"], db.FORMATO_UTC).replace(tzinfo=timezone.utc)
     limite = (recibido - timedelta(days=ventana)).strftime(db.FORMATO_UTC)
     return con.execute(
-        """SELECT e.event_id, e.recepcion_id, e.received_at, l.lead_id
+        """SELECT e.event_id, e.received_at, l.lead_id
            FROM leads l JOIN eventos e ON e.id = l.evento_id
-           WHERE e.id < ? AND e.received_at >= ?
+           WHERE e.id < ? AND e.received_at >= ? AND e.event_id IS NOT NULL
              AND e.estado NOT IN ('rechazado', 'duplicado')
              AND l.clave_nombre <> '' AND l.clave_nombre = ?
              AND ((? IS NOT NULL AND l.telefono_e164 = ?) OR (? IS NOT NULL AND l.email = ?))

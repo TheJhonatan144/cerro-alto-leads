@@ -1,6 +1,7 @@
 """Bloque 2a: normalización, validación y duplicados de negocio."""
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -58,12 +59,22 @@ def contar_leads(con) -> int:
     return con.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
 
 
-def lead_valido(nombre="Ana Pérez", phone="0991112233", email="ana@example.com", **extra):
+_AUTO = object()
+
+
+def lead_valido(nombre="Ana Pérez", phone="0991112233", email="ana@example.com",
+                event_id=_AUTO, **extra):
+    """Cuerpo válido; por defecto con un event_id único. event_id=None lo omite."""
     lead = {"full_name": nombre, "phone": phone, "email": email, "message": "Hola"}
     lead.update(extra)
-    return {"event_type": "lead.created",
-            "source": {"platform": "instagram", "campaign": "Sonrisa Blanca"},
-            "lead": lead}
+    cuerpo = {"event_type": "lead.created",
+              "source": {"platform": "instagram", "campaign": "Sonrisa Blanca"},
+              "lead": lead}
+    if event_id is _AUTO:
+        event_id = f"evt_test_{uuid.uuid4().hex}"
+    if event_id is not None:
+        cuerpo["event_id"] = event_id
+    return cuerpo
 
 
 # --- Funciones puras ---------------------------------------------------------
@@ -88,12 +99,29 @@ def test_normalizar_telefono(valor, esperado):
 
 @pytest.mark.parametrize("valor, esperado", [
     (" Carla.Mendoza@example.com ", "carla.mendoza@example.com"),
+    ("juan+test@sub.example.com", "juan+test@sub.example.com"),
+    ("promo@ganadinero.example", "promo@ganadinero.example"),
+    ("ana@example.xn--p1ai", "ana@example.xn--p1ai"),
     ("no-es-correo", None),
     (12345, None),
     (None, None),
+    ("a\u0000@example.com", None),
+    ("a@b..com", None),
+    ("a@b", None),
+    ("a@@b.com", None),
+    (".a@b.com", None),
+    ("a.@b.com", None),
+    ("a..b@c.com", None),
+    ("a b@c.com", None),
+    ("a@-b.com", None),
+    ("a@b-.com", None),
+    ("ñ@example.com", None),
+    ("K@example.com", None),  # signo Kelvin: .lower() lo volvería ASCII
+    ("a@example.c0m", None),
+    ("a@example.c", None),
     ("a@b@example.com", None),
-    ("con espacio@example.com", None),
-    ("sin@dominio", None),
+    ("x" * 65 + "@example.com", None),
+    ("x@" + "a" * 64 + ".com", None),
     ("x@" + "a" * 250 + ".com", None),
 ])
 def test_normalizar_email(valor, esperado):
@@ -139,6 +167,11 @@ def test_los_diez_payloads_en_orden(cliente, con):
     assert ev("03")["lead_id"] == ev("01")["lead_id"]
     assert ev("03")["motivo"].startswith("Mismo contacto y nombre que un evento anterior (")
     assert "carla" not in ev("03")["motivo"].lower()
+    r = cliente.get("/leads/estado", params={"event_id": ev("03")["duplicado_de"]})
+    assert r.status_code == 200 and r.json()["lead_id"] == ev("01")["lead_id"]
+    [m03] = con.execute("SELECT * FROM lead_mensajes").fetchall()
+    assert m03["evento_id"] == ids["03"] and m03["lead_id"] == ev("01")["lead_id"]
+    assert m03["servicio"] == "Combo limpieza + blanqueamiento"
 
     assert ev("04")["estado"] == "pendiente" and ev("04")["telefono_e164"] == "+13055550142"
 
@@ -178,6 +211,15 @@ def test_sin_contactos_validos_rechazado(cliente, con):
     assert e["estado"] == "rechazado"
     assert e["motivo"] == "Sin teléfono ni correo válidos: teléfono inválido, correo ausente"
     assert "1111111111" not in e["motivo"]
+    assert contar_leads(con) == 0
+
+
+def test_sin_telefono_y_correo_mal_formado_rechazado(cliente, con):
+    i = enviar(cliente, lead_valido(phone=None, email="a@b..com"))
+    procesar_evento(con, i)
+    e = evento(con, i)
+    assert e["estado"] == "rechazado"
+    assert e["motivo"] == "Sin teléfono ni correo válidos: teléfono ausente, correo inválido"
     assert contar_leads(con) == 0
 
 
@@ -249,8 +291,49 @@ def test_mismo_correo_mismo_nombre_es_duplicado(cliente, con):
     procesar_evento(con, a)
     procesar_evento(con, b)
     assert evento(con, b)["estado"] == "duplicado"
-    assert evento(con, b)["duplicado_de"] == evento(con, a)["recepcion_id"]  # a no tiene event_id
+    assert evento(con, b)["duplicado_de"] == evento(con, a)["event_id"]
     assert contar_leads(con) == 1
+    # duplicado_de siempre se puede consultar por event_id.
+    r = cliente.get("/leads/estado", params={"event_id": evento(con, b)["duplicado_de"]})
+    assert r.status_code == 200
+    assert r.json()["lead_id"] == evento(con, b)["lead_id"]
+
+
+def test_original_sin_event_id_no_genera_duplicado(cliente, con):
+    a = enviar(cliente, lead_valido(event_id=None))
+    b = enviar(cliente, lead_valido(event_id="evt_con_id"))
+    procesar_evento(con, a)
+    procesar_evento(con, b)
+    assert evento(con, a)["event_id"] is None
+    assert evento(con, b)["estado"] == "pendiente"
+    assert evento(con, b)["duplicado_de"] is None
+    assert evento(con, a)["lead_id"] != evento(con, b)["lead_id"]
+    assert contar_leads(con) == 2
+    assert con.execute("SELECT COUNT(*) FROM eventos WHERE estado = 'duplicado'").fetchone()[0] == 0
+
+
+def test_duplicado_conserva_su_mensaje_en_el_lead_original(cliente, con):
+    a = enviar(cliente, lead_valido(message="Solo quiero precios", service_interest="Limpieza"))
+    b = enviar(cliente, lead_valido(
+        message="Tengo sangrado abundante y quiero atención inmediata", service_interest="Valoración"))
+    procesar_evento(con, a)
+    procesar_evento(con, b)
+
+    eb = evento(con, b)
+    assert eb["estado"] == "duplicado"
+    assert eb["motivo"].startswith("Mismo contacto y nombre que un evento anterior (")
+    assert contar_leads(con) == 1
+
+    [m] = con.execute("SELECT * FROM lead_mensajes").fetchall()
+    assert m["lead_id"] == evento(con, a)["lead_id"]
+    assert m["evento_id"] == b
+    assert m["mensaje"] == "Tengo sangrado abundante y quiero atención inmediata"
+    assert m["servicio"] == "Valoración"
+    assert m["recibido_at"] == eb["received_at"]
+
+    # Reprocesar no duplica el mensaje ni cambia el estado público.
+    assert procesar_evento(con, b)["estado"] == "duplicado"
+    assert con.execute("SELECT COUNT(*) FROM lead_mensajes").fetchone()[0] == 1
 
 
 def test_nombres_vacios_no_son_duplicado(cliente, con):
@@ -297,11 +380,10 @@ def test_ventana_configurable(cliente, con, monkeypatch):
 
 
 def test_original_rechazado_no_cuenta(cliente, con):
-    cuerpo = lead_valido()
-    a = enviar(cliente, cuerpo)
+    a = enviar(cliente, lead_valido())
     procesar_evento(con, a)
     con.execute("UPDATE eventos SET estado = 'rechazado', motivo = 'x' WHERE id = ?", (a,))
-    b = enviar(cliente, cuerpo)
+    b = enviar(cliente, lead_valido())
     procesar_evento(con, b)
     assert evento(con, b)["estado"] == "pendiente"
 

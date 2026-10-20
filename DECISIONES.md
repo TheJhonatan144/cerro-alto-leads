@@ -70,8 +70,14 @@ Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`pr
 - **[Probado]** `+1 (305) 555-0142`: con `phonenumbers==9.0.41`, `is_valid_number=True` → `+13055550142`. Por eso **no** se implementó la vía de respaldo (`is_possible_number` + advertencia `telefono_no_verificado`): no hace falta para los datos dados, y aceptar números solo "posibles" relajaría la validación. Si una versión futura de la librería lo diera por inválido, el evento 04 se aceptaría igual por su correo, con la advertencia `telefono_invalido`.
 
 ### Correo, nombre, textos y catálogos
-- **[R]** Correo: solo `str`; recorte y minúsculas; regex simple (una `@`, sin espacios, dominio con punto) y máximo 254 caracteres. Sin librerías de validación de dominios.
-- **[D]** Un correo con sustitutos UTF-16 sueltos es inválido. En nombre, ciudad, mensaje, etc. se escapan con `backslashreplace`, como en el Bloque 1.
+- **[R]** Correo ASCII estricto (Bloque 2a.1; la regex simple anterior admitía `a\u0000@example.com` y `a@b..com`). Se recorta y pasa a minúsculas antes de validar; si no cumple, es None. Reglas:
+  - solo ASCII, sin caracteres de control ni espacios; máximo 254 caracteres; exactamente una `@`;
+  - parte local de 1 a 64 caracteres de `A-Za-z0-9` y `.!#$%&'*+/=?^_`{|}~-`, sin punto al inicio ni al final ni dos puntos seguidos;
+  - dominio de hasta 253 caracteres con al menos dos etiquetas de 1 a 63 caracteres `[a-z0-9-]` que no empiezan ni terminan en `-`; la última es alfabética de 2 o más letras, o empieza por `xn--`.
+  - Sin librerías de validación ni consultas de dominio.
+- **[D]** Por qué ASCII estricto: el correo se usa como clave de duplicados y como dato de contacto para recepción y la API de pacientes. Un carácter de control o un dominio mal formado no sirve para contactar a nadie y puede provocar coincidencias falsas o errores aguas abajo. Se rechazan los correos internacionalizados (`ñ@example.com`): son raros en este contexto, y si el teléfono es válido el lead se acepta igual, con la advertencia `correo_invalido`. Los dominios IDN se admiten en su forma punycode (`xn--`).
+- **[D]** La comprobación ASCII se hace **antes** de `.lower()`: el signo Kelvin `K` (U+212A) pasaría a `k` ASCII y se colaría.
+- **[D]** En nombre, ciudad, mensaje, etc. los sustitutos UTF-16 sueltos se escapan con `backslashreplace`, como en el Bloque 1.
 - **[R]** Nombre con espacios colapsados (`""` si no es texto). `clave_nombre`: minúsculas, sin tildes (NFKD), espacios colapsados; solo para comparar.
 - **[R]** Texto: `str` recortado; lista de `str` unida con `", "` (el evento 06 trae `city: ["Quito"]` → `"Quito"`). **[D]** Vacío tras recortar → None.
 - **[R]** Servicios, plataformas y campañas conocidos están en constantes (`normalizar.py`), tomados de los payloads de ejemplo. Se comparan con `clave_nombre` y se guarda el valor canónico. Un valor desconocido no rechaza: se guarda tal cual y se añade una advertencia.
@@ -85,8 +91,11 @@ Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`pr
 ### Duplicados de negocio
 - **[R]** Un evento es duplicado de uno anterior si coincide el teléfono normalizado **o** el correo normalizado, **y** coincide `clave_nombre` (no vacía en ambos), **y** el original se recibió dentro de los `DUPLICADO_VENTANA_DIAS` días (por defecto 7) anteriores a la recepción del actual, **y** el original no es `rechazado` ni `duplicado`.
 - **[R]** Compartir solo teléfono o solo correo con otro nombre **no** es duplicado. Si cualquiera de los dos nombres está vacío, **no** es duplicado.
-- **[R]** Se toma el original más antiguo (`ORDER BY received_at, id`). Duplicado → `estado='duplicado'`, `duplicado_de` = `event_id` del original (o su `recepcion_id` si no tiene), `lead_id` = el del original, motivo "Mismo contacto y nombre que un evento anterior (<received_at del original>)", sin datos personales. No crea fila en `leads`.
+- **[R]** Se toma el original más antiguo (`ORDER BY received_at, id`). Duplicado → `estado='duplicado'`, `duplicado_de` = `event_id` del original, `lead_id` = el del original, motivo "Mismo contacto y nombre que un evento anterior (<received_at del original>)", sin datos personales. No crea fila en `leads`.
+- **[D]** Un original sin `event_id` no genera duplicados (Bloque 2a.1). Solo cuentan como originales los eventos con `event_id`, para que `duplicado_de` sea siempre consultable con `GET /leads/estado?event_id=`. Ante la duda se conserva el lead: si el original no tiene `event_id`, el evento nuevo se acepta como lead propio, aunque eso pueda causar una llamada de más. Ya no se usa `recepcion_id` en `duplicado_de`.
 - **[D]** El duplicado también guarda su `telefono_e164` y `email` normalizados en `eventos`.
+- **[D] D4 · Un duplicado no pierde información nueva** (Bloque 2a.1). El duplicado no genera un lead nuevo ni una llamada nueva, pero su mensaje y su servicio normalizados se guardan en la tabla `lead_mensajes` (`lead_id` del original, `evento_id` UNIQUE, `recibido_at`, `servicio`, `mensaje`, `creado_at`). El estado público del duplicado no cambia: sigue `duplicado`, con su motivo.
+  - **[L]** Pendiente: en el bloque de clasificación y avisos se añadirá una etapa que revise estos mensajes y avise a recepción como "actualización de un lead existente" si hay urgencia o intención de agendar (p. ej. "Solo quiero precios" seguido de "Tengo sangrado abundante y quiero atención inmediata"). Hasta entonces el mensaje queda guardado y consultable en `lead_mensajes`, pero nadie recibe aviso.
 - **[D]** Ventana inclusiva: `received_at` del original ≥ `received_at` actual − N días. "Anterior" = `id` menor (orden de llegada). Solo se buscan originales entre eventos con fila en `leads`, es decir, aceptados.
 - **[L]** El resultado depende del orden de procesamiento: si un evento posterior se procesa antes que uno anterior, el anterior no lo verá como original. El trabajador del bloque siguiente debe procesar en orden de llegada.
 - **[L]** Si la variable `DUPLICADO_VENTANA_DIAS` no es un entero o es negativa, `procesar_evento` falla con `ValueError` en lugar de usar el valor por defecto.
@@ -98,4 +107,4 @@ Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`pr
 - **[D]** `GET /leads/estado` (tanto `?event_id=` como cada elemento de `?desde=`) devuelve los 8 campos del contrato más `recepcion_id`. Los 8 campos se mantienen sin cambios; el extra permite distinguir eventos sin `event_id`.
 
 ### Base de datos
-- **[D]** Nueva tabla `leads` (sin migraciones: hay que borrar `data/leads.db*` antes de arrancar). `CHECK` de que haya teléfono o correo y de que `advertencias` sea JSON válido; índices por teléfono, correo y `clave_nombre`. La tabla `eventos` no cambió.
+- **[D]** Nuevas tablas `leads` y `lead_mensajes` (sin migraciones: hay que borrar `data/leads.db*` antes de arrancar). `CHECK` de que haya teléfono o correo y de que `advertencias` sea JSON válido; índices por teléfono, correo y `clave_nombre`. La tabla `eventos` no cambió.
