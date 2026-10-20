@@ -3,3 +3,10 @@
 node_modules/
 __pycache__/
 .venv/
+*.db
+*.sqlite
+*.sqlite3
+data/
+logs/
+.pytest_cache/
+TIEMPO.md
