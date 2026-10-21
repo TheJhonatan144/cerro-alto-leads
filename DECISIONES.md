@@ -207,7 +207,7 @@ Cada punto se demostró primero con un test que fallaba contra el código del 2b
 
 ## Bloque 3 · Decisiones aprobadas, pendientes de implementar
 
-Estas decisiones están **aprobadas, pendientes de implementar en el Bloque 3**. Nada de esto existe aún en el código ni se ha probado.
+Estas decisiones estaban **aprobadas, pendientes de implementar en el Bloque 3**. **Ya están implementadas y probadas**: ver la sección "Bloque 3 · Enriquecimiento con la API de pacientes" más abajo, donde se detalla cómo quedó cada una.
 
 - **D5 · Fallo de la API de pacientes** (timeout, 5xx): un reintento corto dentro de la etapa. Si sigue fallando, el lead continúa con `enriquecimiento=no_disponible` y se avisa por el canal de errores, para no bloquear el aviso a recepción de menos de 5 minutos.
   - **[L]** Ese lead no se enriquece después.
@@ -224,3 +224,160 @@ Estas decisiones están **aprobadas, pendientes de implementar en el Bloque 3**.
   - *Wait* y reintentos = espera entre reintentos del trabajador (30 s, 2 min, 10 min, 30 min; máximo 5).
   - *IF / Switch* = enrutado por temperatura (bloque de clasificación).
 - **Estado:** previsto para el Bloque 5; todavía no hay flujos de n8n en el repositorio ni se ha ejecutado ninguno. Cuando se incluyan, esta línea pasará a: "flujos de n8n incluidos como opción, probados por el autor, no requeridos" (solo después de haberlos ejecutado).
+
+## Bloque 3 · Enriquecimiento con la API de pacientes
+
+Implementado en `app/pacientes.py` (cliente, limitador, presupuesto y validación), `app/enriquecimiento.py` (etapa y persistencia) y `app/errores.py` (`Reprogramar` y el punto único del canal de errores). Probado solo contra una API simulada (`httpx.MockTransport`): **no se ha llamado a la API real**.
+
+### Etapa y flujo
+- **[R]** Nueva etapa `enriquecer_paciente` en `ETAPAS`, después de `normalizar_y_duplicados`. Solo actúa sobre eventos `pendiente` con lead; ignora `rechazado`, `duplicado` y `fallido` (el trabajo queda `hecho` sin llamar a la API).
+- **[R]** Una sola consulta `GET /v1/pacientes` con el teléfono E.164 y el correo normalizados del lead (los que existan; la API devuelve los que coincidan con cualquiera). httpx codifica el `+` como `%2B` (verificado con un test). Paginación por `cursor`, hasta `PACIENTES_MAX_PAGINAS` (5); si queda página siguiente, advertencia `tope_paginas_pacientes`. *(Cambiado en el Bloque 3.2: una búsqueda incompleta da `ambigua`.)*
+- **[R] D7** (refinada por D7.1 en el Bloque 3.1; ver allí): es paciente solo si exactamente **una** coincidencia tiene el mismo `clave_nombre` que el lead (minúsculas, sin tildes, espacios colapsados). Si hay candidatos pero ninguno o más de uno coincide por nombre → `ambigua`, sin pedir tratamientos. Sin candidatos → `no_paciente`.
+- **[D]** Antes de aplicar D7 se eliminan los candidatos repetidos por `id`: el mismo paciente en dos páginas no hace ambigua la coincidencia. Un lead con nombre vacío nunca coincide por nombre.
+- **[R]** Con coincidencia única se piden los tratamientos (máximo 5 páginas; si se alcanza el tope, advertencia `tope_paginas_tratamientos`). Se guardan el número de tratamientos `pendiente` y sus tipos distintos, en orden de aparición y como máximo 5. Si la API responde 404 a los tratamientos, el paciente queda encontrado, con `tratamientos_pendientes = NULL` y la advertencia `tratamientos_no_disponibles`. *(Cambiado en el Bloque 3.2: tratamientos incompletos y `tratamientos_completos`; tipos normalizados y validados.)*
+
+### Cliente HTTP
+- **[R]** httpx con timeout de conexión de 3 s y de lectura de 5 s, sin seguir redirecciones (una redirección cuenta como `respuesta_inesperada`). El token solo va en la cabecera `Authorization`.
+- **[R]** Los loggers `httpx` y `httpcore` quedan en `WARNING`. **Probado con mutación:** si se quita ese ajuste, el test de logs falla, porque httpx registra en INFO la URL con `telefono=%2B593…&email=…`.
+- **[D]** `trust_env=False`: el cliente no usa proxies ni `.netrc` del entorno. Si hiciera falta un proxy, habría que configurarlo explícitamente.
+- **[D]** Las excepciones de httpx se convierten en códigos cortos con `raise … from None`, para que ningún mensaje encadenado lleve la URL con datos personales.
+- **[R]** Se valida la forma de cada respuesta: objeto con `data` (lista) y `next_cursor` (`null` o texto no vacío); cada paciente con `id`, `nombre_completo` (texto), `estado` ∈ {activo, inactivo} y `sede_habitual` ∈ {norte, valle} o `null`; cada tratamiento con `tipo` (texto no vacío) y `estado` ∈ {pendiente, en_curso, completado, cancelado}. Cualquier desviación, o un JSON inválido, cuenta como API no disponible (`forma_inesperada`), nunca como excepción sin controlar. *(Cambiado en el Bloque 3.2: `next_cursor` ausente, `id` con patrón y campos guardados que pasan a NULL con advertencia.)*
+- **[D]** Del paciente solo se conservan `id`, la clave del nombre (para D7, en memoria; no se guarda), sede, última visita y estado. El teléfono, el correo y la fecha de nacimiento que devuelve la API se descartan al validar.
+
+### D5 · Fallos de la API
+- **[R]** Ante un timeout, un error de red o un 5xx: **un solo reintento corto por ejecución de la etapa**, si quedan al menos 1 s de presupuesto. Si sigue fallando: `enriquecimiento = no_disponible`, con motivo legible y log WARNING sin datos personales. El lead continúa y el trabajo queda `hecho`: degradar no es fallar.
+- **[D]** El reintento es inmediato, sin pausa: la etapa no duerme.
+- **[R]** 401 (y también 403): sin reintento; `no_disponible` con motivo "La API de pacientes rechazó las credenciales" y log ERROR. 400 o forma inesperada: `no_disponible`.
+- **[R]** El canal de errores tiene un único punto de llamada: `errores.reportar_error(origen, codigo, evento_id=…, nivel=…)`. Hoy solo registra en el log; el Bloque 5 lo enlazará con el canal de avisos.
+- **[L]** Un lead `no_disponible` no se vuelve a enriquecer después (aprobado en D5).
+- **[R]** Si `API_PACIENTES_URL` o `API_PACIENTES_TOKEN` están vacíos: `no_configurado`, sin llamadas, y un único aviso WARNING al arrancar (`create_app`).
+
+### D6 · Límites y reprogramación
+- **[R]** Limitador local de ventana deslizante, 25 solicitudes por minuto (`PACIENTES_LIMITE_POR_MIN`, de 1 a 30: la API admite 30 por token). Sin cupo, la etapa **no duerme**: lanza `Reprogramar(segundos)` con lo que falta para liberar un hueco.
+- **[R]** Un 429 lanza `Reprogramar(Retry-After)` con tope de 120 s. **[D]** Si `Retry-After` falta, no es un entero o es ≤ 0, se usan 60 s. *(Cambiado en el Bloque 3.2: Retry-After exacto hasta 120 s; si es mayor, falta o es inválido, se degrada.)*
+- **[R]** El trabajador, ante `Reprogramar`: deja el trabajo `pendiente` con `proximo_intento_at = ahora + espera`, libera la lease y **no consume intento** (deshace el incremento del reclamo). Como máximo 3 reprogramaciones por trabajo (columna nueva `trabajos.reprogramaciones`). A la cuarta, la etapa degrada según D5 ("Se alcanzó el límite de solicitudes de la API de pacientes"). Se mantiene la comprobación de dueño del 2b.1.
+- **[D]** Si una etapa cualquiera lanza `Reprogramar` con las reprogramaciones agotadas, el trabajador lo trata como un fallo normal (`ReprogramacionesAgotadas`, con reintentos con espera). Es una red de seguridad para etapas futuras; `enriquecer_paciente` degrada antes.
+- **[L]** El limitador vive en memoria, uno por proceso (compartido entre trabajos mediante el `Contexto` del trabajador): al reiniciar se vacía. El límite de 30/min de la API sigue protegiendo con sus 429.
+- **[L]** Una reprogramación repite la etapa desde el principio: las consultas ya hechas en ese intento se vuelven a hacer.
+- **[L]** Con muchos leads seguidos, al agotarse las 25 solicitudes del minuto los trabajos se reprograman hasta que se libera cupo: la cola puede retrasarse hasta un minuto, y un lead que necesite más de 3 reprogramaciones degrada a `no_disponible`.
+
+### Presupuesto de tiempo
+- **[R]** La etapa tiene un presupuesto total de 30 s (reloj monotónico; la lease es de 60 s y se renueva al empezar cada etapa). Cada petición usa `min(5 s, restante)` de lectura y `min(3 s, restante)` de conexión. Sin presupuesto, `no_disponible` ("Se agotó el tiempo disponible…").
+- **[L]** El presupuesto se comprueba antes de cada petición y se aplica a cada timeout de httpx. No es un tope estricto de reloj de pared: lo que tarden la base o la validación entre peticiones no está acotado aparte, aunque es despreciable frente a la red.
+
+### Persistencia
+- **[R]** Nueva tabla `enriquecimientos`, una fila por evento (`evento_id` como clave primaria) con UPSERT: repetir la etapa actualiza la fila y no duplica. Columnas: `estado_enriquecimiento` (paciente | no_paciente | ambigua | no_disponible | no_configurado), `coincidencia` (unica | ninguna | ambigua), `paciente_id`, `sede_habitual`, `ultima_visita`, `estado_paciente`, `tratamientos_pendientes`, `tipos_pendientes` (JSON, máximo 5), `advertencias` (JSON), `motivo` y `consultado_at`, más `lead_id`. **No** se guardan el nombre, el teléfono, el correo ni la fecha de nacimiento del paciente.
+- **[D]** `CHECK`: `paciente_id` presente si y solo si el estado es `paciente`; motivo obligatorio en `ambigua`, `no_disponible` y `no_configurado`.
+- **[R] El esquema cambia** (tabla nueva y columna `trabajos.reprogramaciones`). Sin migraciones: hay que borrar `data/leads.db*` antes de arrancar.
+
+### Configuración
+- **[R]** Variables nuevas, validadas al arrancar como las demás:
+
+  | Variable | Validación | Defecto |
+  |---|---|---|
+  | `API_PACIENTES_URL` | `http`/`https` con host; sin credenciales, consulta ni fragmento | vacía → `no_configurado` |
+  | `API_PACIENTES_TOKEN` | ASCII imprimible sin espacios; el error no muestra el valor | vacía → `no_configurado` |
+  | `PACIENTES_LIMITE_POR_MIN` | entero de 1 a 30 | 25 |
+  | `PACIENTES_MAX_PAGINAS` | entero de 1 a 20 | 5 |
+
+- **[D]** `Config` oculta el token en su `repr`, y `ClientePacientes` también: imprimir o registrar cualquiera de los dos no lo muestra.
+
+### Tests y seguridad
+- **[R]** `tests/conftest.py` bloquea (autouse) `connect`, `connect_ex` y `getaddrinfo` hacia cualquier host que no sea loopback. **[D]** El bloqueo lanza un `OSError`, como una red caída real, para que el código bajo prueba siga su camino de error real; un test comprueba que un cliente sin `MockTransport` degrada a `no_disponible` sin salir de la máquina.
+- **[S]** El webhook registra el `event_id`. Se asume opaco, como en los payloads (`evt_…`); si el conector metiera datos personales en él, acabarían en el log.
+
+## Bloque 3.1 · D7.1, cruce por nombre (refinamiento de D7)
+
+- **Defecto reproducido:** D7 comparaba la clave del nombre con igualdad exacta. El lead "Carla Mendoza" frente al paciente "Carla Mendoza Ruiz" (el ejemplo del propio contrato de la API) quedaba `ambigua`. Antes de corregir fallaron 4 de los 9 casos del test de integración: el apellido extra, el orden invertido, las tildes con apellido extra y el caso simétrico. Los 5 ambiguos o exactos ya pasaban y quedan como regresión.
+- **[R] D7.1** (`normalizar.elegir_por_nombre`, función pura con tests de tabla en `tests/test_nombres.py`):
+  1. Se normaliza (sin tildes ni mayúsculas, espacios colapsados), se separa en palabras y se descartan las partículas `de, del, la, las, los, y`.
+  2. Si exactamente **una** candidata tiene las mismas palabras (en cualquier orden), es el paciente. Si hay dos o más exactas, es ambigua. *(Cambiado en el Bloque 3.2: D7.2 elimina la prioridad de la exacta.)*
+  3. Si no hay ninguna exacta: una candidata coincide si todas las palabras del nombre más corto están en el más largo **y** el más corto tiene al menos 2 palabras. La regla es simétrica: da igual si el nombre largo es el del lead o el de la API. Si exactamente una coincide así, es el paciente.
+  4. Cualquier otro caso con candidatas: `coincidencia = "ambigua"`, sin pedir tratamientos. Un nombre de lead vacío, o de una sola palabra tras quitar partículas, nunca confirma a un paciente.
+- **[D]** Las palabras se cuentan (multiconjunto): "Carla Carla" no está contenido en "Carla Mendoza".
+- **[D]** Antes de aplicar la regla se siguen eliminando los candidatos repetidos por `id`.
+- **[L]** Errores de ortografía ("Karla"), apodos ("Pepe" por José), nombres compuestos escritos juntos o apellidos cambiados producen `ambigua`. Es un falso negativo, el lado seguro: ese lead no recibe el criterio caliente de tratamiento pendiente, pero **nunca se atribuye a un lead el historial de otra persona**.
+- **[L]** Dos personas distintas que comparten contacto y cuyos nombres se contienen (p. ej. "Juan Pérez" y "Juan Pérez López", padre e hijo con el mismo teléfono) se confundirían si solo una de ellas aparece como paciente. El riesgo se limita porque la API ya filtra por teléfono o correo.
+- El esquema de la base **no** cambió.
+
+## Bloque 3.2 · Correcciones tras la revisión del Bloque 3
+
+Cada punto se demostró primero con un test que fallaba contra el código del 3.1 (`tests/test_pacientes_3_2.py` y la tabla de `tests/test_nombres.py`). Los **siete** defectos se reprodujeron. Los puntos 3, 4 y 5 son **cambios de regla**, no solo correcciones.
+
+### 1. Presupuesto total y tope de tamaño
+- **Defecto reproducido:** httpx limita cada lectura, no el total. Contra un servidor real en loopback que envía 1 byte cada 0,5 s, con un presupuesto de 2 s la etapa tardó **14,8 s** y terminó como si nada (`no_paciente`). Tampoco había tope de tamaño: un cuerpo de 300 KiB se aceptaba.
+- **[D]** La respuesta se lee en streaming (`client.stream` e `iter_bytes`), y el presupuesto se comprueba en cada trozo. Pasado el plazo se aborta como `timeout` (transitorio): reintento corto si queda presupuesto y, si no, D5. Con la corrección, el mismo test termina en **2,07 s** con `no_disponible`.
+- **[D]** El cuerpo tiene un tope de **256 KiB**, comprobado por `Content-Length` y también mientras se lee (sobre el contenido ya descomprimido, así que vale para gzip): `respuesta_demasiado_grande` → `no_disponible`. `httpx.DecodingError` cuenta como forma inesperada.
+- **[L]** El exceso máximo sobre el presupuesto es **un timeout de lectura (5 s)**: un trozo puede tardar hasta ese tiempo en llegar antes de la comprobación. En el peor caso, unos 35 s por etapa, siempre por debajo de la lease de 60 s, que además se renueva al empezar cada etapa. *(Solo vale mientras se lee el cuerpo; ver la corrección siguiente.)*
+- **[L] Corrección (hallazgo de revisión, no corregido):** mientras llegan las **cabeceras** el presupuesto no se comprueba: httpx solo limita cada lectura. Un servidor que envíe las cabeceras byte a byte, más deprisa que el timeout de lectura pero sin terminar nunca, puede alargar la petición sin límite y **superar la lease de 60 s**. Riesgo residual **aceptado**: exige un servidor anómalo, no hay pérdida de datos (el evento y su trabajo siguen persistidos) y lo peor es que la cola se detiene mientras dure. Se detectaría por "pendiente antiguo" en el resumen y la vigilancia previstos (Bloque 5b y Bloque 5n).
+
+### 2. Resultados parciales
+- **Defecto reproducido:** con el tope de páginas alcanzado y `next_cursor` pendiente, la búsqueda podía confirmar un paciente "único" que no lo era; y con los tratamientos incompletos, cero pendientes vistos se guardaban como `0`.
+- **[D]** Búsqueda incompleta → `ambigua`, motivo "Búsqueda incompleta: se alcanzó el tope de páginas…", advertencia `tope_paginas_pacientes`, sin pedir tratamientos.
+- **[D]** Columna nueva `enriquecimientos.tratamientos_completos`: `1` si se leyeron todas las páginas, `0` si se alcanzó el tope, `NULL` sin dato (404). Con el tope alcanzado y pendientes vistos, el conteo es un **mínimo** válido; con cero pendientes vistos, `tratamientos_pendientes = NULL` (desconocido), nunca `0`.
+
+### 3. D7.2 (cambio de regla; refinamiento de D7.1)
+- **Defecto reproducido:** D7.1 daba prioridad a la coincidencia exacta. Un padre "Juan Pérez" y su hijo "Juan Carlos Pérez", con el mismo contacto, daban "paciente = el padre" aunque el lead pudiera ser cualquiera de los dos.
+- **[R] D7.2:** es paciente solo si exactamente **una** candidata es compatible, ya sea por igualdad exacta de palabras o por contención según D7.1 (el más corto con al menos 2 palabras y contenido en el más largo). Si hay más de una compatible, `ambigua`. Se eliminó la prioridad de la exacta. Los tests de D7.1 que esperaban "gana la exacta" ahora esperan `ambigua`.
+- **[L]** Más casos ambiguos (falso negativo, el lado seguro): nunca se atribuye el historial de un familiar.
+
+### 4. Retry-After (cambio de regla)
+- **Defecto reproducido:** un `Retry-After` de 500 se recortaba a 120 y se reintentaba antes de tiempo, gastando reprogramaciones. Un valor ausente, inválido o `0` se convertía en 60 s.
+- **[R]** Si el valor es ≤ 120 s, se reprograma **exactamente** ese tiempo (mínimo 1 s; `0` → 1 s). Si es mayor, no se reintenta antes de tiempo ni se gastan reprogramaciones: se degrada a `no_disponible` con motivo "Límite de uso de la API de pacientes…", y queda registro (`reportar_error`, código `limite_de_uso`).
+- **[D]** Lectura segura: solo dígitos ASCII y como mucho 6 caracteres (se admiten espacios alrededor). Un entero enorme, un valor con signo, decimales o texto, y una cabecera **ausente**, se tratan como "mayor que el tope" (se degrada), sin `OverflowError` ni conversión de enteros gigantes. La cabecera ausente se trata así porque el contrato la promete en todo 429.
+
+### 5. next_cursor ausente (cambio de regla)
+- **Defecto reproducido:** si faltaba la clave `next_cursor`, la página se aceptaba en silencio como última, aunque viniera llena.
+- **[R]** Sin la clave, solo se acepta si la página trae menos de 3 elementos (último tramo), con la advertencia `next_cursor_ausente`. Con 3 elementos y sin la clave → forma inesperada (degrada). Con la clave presente, sin cambios.
+
+### 6. JSON anidado
+- **Defecto reproducido:** un JSON anidado (50 000 niveles) lanzaba `RecursionError` sin capturar. La etapa fallaba, el trabajo gastaba intentos y no se guardaba nada.
+- **[D]** El cuerpo se decodifica con `json.loads` y se captura `ValueError` (incluye UTF-8 inválido) y `RecursionError` como forma inesperada: `no_disponible`, trabajo `hecho`, sin gastar intentos.
+
+### 7. Validación de lo que se guarda del paciente
+- **Defecto reproducido:** `ultima_visita = "Rosa Quishpe, teléfono 0987650021"` se guardaba tal cual. Una sede o un estado desconocidos tumbaban toda la respuesta. Los tipos de tratamiento se guardaban sin validar.
+- **[D]** `ultima_visita`: fecha ISO `YYYY-MM-DD` real (`2026-02-30` y `2026-3-1` no valen). `sede_habitual` ∈ {norte, valle}; estado del paciente ∈ {activo, inactivo}. Un valor inválido se guarda como `NULL` con advertencia (`ultima_visita_invalida`, `sede_invalida`, `estado_paciente_invalido`), **sin guardar ni registrar el texto original** (verificado sobre el volcado completo de la base y los logs).
+- **[D]** Tipos de tratamiento: se normalizan (minúsculas, sin tildes, espacios colapsados) y deben cumplir `^[a-z0-9_ ]{1,40}$`. Un tipo inválido no se guarda (advertencia `tipo_tratamiento_invalido`), pero el tratamiento **sí cuenta** como pendiente. Los tipos guardados quedan en minúsculas (`"ortodoncia"`).
+- **[D] Desviación de lo pedido:** un `paciente_id` que no cumple `^[A-Za-z0-9_-]{1,64}$` **no** queda como `NULL` con advertencia: sin id no se puede identificar al paciente ni pedir sus tratamientos (y el `CHECK` exige id en `paciente`). Por eso toda la respuesta cuenta como forma inesperada → `no_disponible`, y el id inválido no se guarda.
+- **[D] Patrón del id (ajuste del 3.2):** `^[A-Za-z0-9_-]{1,64}$` (con `fullmatch`). Su único objetivo es que el id sea **seguro dentro de la URL** `/v1/pacientes/{id}/tratamientos`; **no** asume el prefijo `pac_`, que no está verificado contra la API real. Válidos: `pac_8F2K1`, `P-123`, `123`, 64 caracteres. Inválidos, que degradan toda la respuesta sin construir nunca la URL: con `/`, `?`, `#`, `%`, `.` (incluido `../x`), espacios, saltos de línea (también uno final), caracteres no ASCII, vacío o 65 caracteres o más. El id se sigue codificando con `quote(…, safe='')` como segunda barrera.
+- **[L]** Un id numérico en el JSON (p. ej. `123` sin comillas) se rechaza: el contrato no fija el tipo y se exige texto. Si la API real devolviera números, habría que aceptarlos convirtiéndolos a texto (`PATRON_PACIENTE_ID` y `_validar_paciente` en `app/pacientes.py`).
+
+### Esquema
+- **Cambia:** columna nueva `enriquecimientos.tratamientos_completos`. Sin migraciones: hay que borrar `data/leads.db*` antes de arrancar.
+
+## Diferido tras la revisión del Bloque 3
+
+Puntos señalados en la revisión que se dejan como están, de forma deliberada:
+
+- **[L] Tipo de tratamiento:** se acepta cualquier texto corto en minúsculas que cumpla `^[a-z0-9_ ]{1,40}$` tras normalizar. Es un dato de la API de la propia clínica, así que la minimización es parcial: un texto corto que no sea un tipo real (p. ej. un nombre en minúsculas) se guardaría.
+- **[D] `next_cursor` ausente en página corta:** se acepta con la advertencia `next_cursor_ausente`. Es una tolerancia deliberada: si la API real omitiera el cursor en las respuestas vacías o cortas, una validación estricta degradaría a `no_disponible` a todos los leads. Se revisará tras verificar la API real.
+
+## Fase 1 frente a lo construido
+
+Diferencias entre lo que suponía la Fase 1 y lo implementado:
+
+- **[D] Duplicados:** la Fase 1 suponía "mismo teléfono o correo en 24 h". El sistema usa una ventana de 7 días (`DUPLICADO_VENTANA_DIAS`) y exige además el mismo nombre (D1; reglas en la sección del Bloque 2a), para no fusionar a familias que comparten teléfono o correo.
+- **[L] Webhook sin autenticar:** la documentación del conector no incluye firma ni secreto compartido, y el conector no se puede modificar. Queda como limitación conocida (ya listada en el Bloque 1, aquí con su motivo).
+- **[L] `GET /leads/estado` sin autenticación:** devuelve `telefono_e164` y `email` sin autenticar porque el contrato exige esos campos. Es una limitación del contrato, no una omisión.
+
+## Plan restante
+
+**Previsto; nada de esta sección está ejecutado.**
+
+- **Bloque 4 · Clasificación:**
+  - clasificación con el LLM y validación de su respuesta;
+  - reglas deterministas como piso (el LLM no puede bajar un lead por debajo de lo que dictan las reglas);
+  - enmascarado de datos personales antes de enviar texto al LLM;
+  - revisión de los mensajes de duplicados (`lead_mensajes`, D4).
+- **Bloque 5 · Enrutado y avisos:**
+  - enrutado por temperatura y cita tentativa con las reglas de la ficha;
+  - avisos con adaptador intercambiable (Telegram, archivo o n8n);
+  - política de reintentos propia para los avisos de leads calientes, con un aviso por evento;
+  - manejador central de errores, que enlaza `errores.reportar_error`.
+- **Bloque 5b · Resumen:** `GET /leads/resumen` y un comando equivalente.
+- **Bloque 5n · Flujos de n8n** (concreta el "Bloque 5" citado en la decisión transversal de n8n):
+  - **Avisos:** Webhook → Telegram.
+  - **Errores:** Webhook → Telegram, más un *Error Trigger* real para los fallos de los propios flujos de n8n.
+  - **Vigilancia:** Schedule Trigger → HTTP → IF → Telegram. Detecta caída del servidor, fallidos o pendientes antiguos y falta de actividad en horario (informativo), y envía un resumen diario.
+  - Los flujos solo se declararán "probados por el autor" **después de ejecutarlos**.
+- **Bloque 6 · Cierre:** reproceso de fallidos y de `no_disponible`, `README`, `USO_IA` y tabla final.

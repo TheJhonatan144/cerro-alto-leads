@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS trabajos (
     max_intentos       INTEGER NOT NULL DEFAULT 5 CHECK (max_intentos >= 1),
     proximo_intento_at TEXT,
     lease_hasta        TEXT,
+    reprogramaciones   INTEGER NOT NULL DEFAULT 0 CHECK (reprogramaciones >= 0),
     ultimo_error       TEXT,
     UNIQUE (evento_id, tipo)
 );
@@ -101,6 +102,31 @@ CREATE TABLE IF NOT EXISTS lead_mensajes (
     creado_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_lead_mensajes_lead ON lead_mensajes(lead_id);
+
+-- Resultado de consultar la API de pacientes: una fila por evento (UPSERT). Sin nombre,
+-- teléfono, correo ni fecha de nacimiento del paciente (minimización de datos).
+CREATE TABLE IF NOT EXISTS enriquecimientos (
+    evento_id               INTEGER PRIMARY KEY REFERENCES eventos(id),
+    lead_id                 TEXT NOT NULL REFERENCES leads(lead_id),
+    estado_enriquecimiento  TEXT NOT NULL CHECK (estado_enriquecimiento IN
+        ('paciente', 'no_paciente', 'ambigua', 'no_disponible', 'no_configurado')),
+    coincidencia            TEXT CHECK (coincidencia IS NULL
+        OR coincidencia IN ('unica', 'ninguna', 'ambigua')),
+    paciente_id             TEXT,
+    sede_habitual           TEXT,
+    ultima_visita           TEXT,
+    estado_paciente         TEXT,
+    tratamientos_pendientes INTEGER CHECK (tratamientos_pendientes IS NULL OR tratamientos_pendientes >= 0),
+    -- 1: se leyeron todas las páginas; 0: tope alcanzado (el conteo es un mínimo); NULL: sin dato
+    tratamientos_completos  INTEGER CHECK (tratamientos_completos IS NULL OR tratamientos_completos IN (0, 1)),
+    tipos_pendientes        TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tipos_pendientes)),
+    advertencias            TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(advertencias)),
+    motivo                  TEXT,
+    consultado_at           TEXT NOT NULL,
+    CHECK ((estado_enriquecimiento = 'paciente') = (paciente_id IS NOT NULL)),
+    CHECK (estado_enriquecimiento NOT IN ('no_disponible', 'no_configurado', 'ambigua')
+        OR (motivo IS NOT NULL AND motivo <> ''))
+);
 """
 
 

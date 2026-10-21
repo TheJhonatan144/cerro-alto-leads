@@ -5,8 +5,9 @@ defecto; uno no vacío pero inválido hace fallar el arranque con el nombre de l
 """
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Carpeta parte-a/: las rutas relativas se resuelven contra ella, no contra el cwd.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -15,12 +16,16 @@ DUPLICADO_VENTANA_DIAS_POR_DEFECTO = 7
 WORKER_INTERVALO_S_POR_DEFECTO = 1.0
 TRABAJO_LEASE_S_POR_DEFECTO = 60
 TRABAJO_MAX_INTENTOS_POR_DEFECTO = 5
+PACIENTES_LIMITE_POR_MIN_POR_DEFECTO = 25
+PACIENTES_MAX_PAGINAS_POR_DEFECTO = 5
 
 # Rangos admitidos (mínimo, máximo), ambos incluidos.
 RANGO_DUPLICADO_VENTANA_DIAS = (1, 90)
 RANGO_WORKER_INTERVALO_S = (0.1, 60.0)
 RANGO_TRABAJO_LEASE_S = (10, 3600)
 RANGO_TRABAJO_MAX_INTENTOS = (1, 20)
+RANGO_PACIENTES_LIMITE_POR_MIN = (1, 30)  # la API admite 30/min por token
+RANGO_PACIENTES_MAX_PAGINAS = (1, 20)
 
 _ENTERO = re.compile(r"[+-]?[0-9]+")
 _DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)")  # sin exponentes, inf ni nan
@@ -38,6 +43,15 @@ class Config:
     worker_intervalo_s: float
     trabajo_lease_s: int
     trabajo_max_intentos: int
+    api_pacientes_url: str | None = None
+    # repr=False: el token no aparece si alguien imprime o registra la configuración.
+    api_pacientes_token: str | None = field(default=None, repr=False)
+    pacientes_limite_por_min: int = PACIENTES_LIMITE_POR_MIN_POR_DEFECTO
+    pacientes_max_paginas: int = PACIENTES_MAX_PAGINAS_POR_DEFECTO
+
+    @property
+    def pacientes_configurada(self) -> bool:
+        return bool(self.api_pacientes_url and self.api_pacientes_token)
 
 
 def _valor(entorno, nombre: str) -> str:
@@ -92,6 +106,30 @@ def worker_activo(entorno=None) -> bool:
     return valor != "0"
 
 
+def api_pacientes_url(entorno=None) -> str | None:
+    entorno = os.environ if entorno is None else entorno
+    valor = _valor(entorno, "API_PACIENTES_URL")
+    if not valor:
+        return None
+    partes = urlsplit(valor)
+    if partes.scheme not in ("http", "https") or not partes.hostname:
+        raise ConfigError("API_PACIENTES_URL debe ser una URL http(s) con host")
+    if partes.username or partes.password or partes.query or partes.fragment:
+        raise ConfigError("API_PACIENTES_URL no debe llevar credenciales, consulta ni fragmento")
+    return valor.rstrip("/")
+
+
+def api_pacientes_token(entorno=None) -> str | None:
+    """El mensaje de error nunca incluye el token."""
+    entorno = os.environ if entorno is None else entorno
+    valor = _valor(entorno, "API_PACIENTES_TOKEN")
+    if not valor:
+        return None
+    if not all(33 <= ord(c) <= 126 for c in valor):  # ASCII imprimible, sin espacios
+        raise ConfigError("API_PACIENTES_TOKEN tiene caracteres no válidos para una cabecera")
+    return valor
+
+
 def cargar_config(entorno=None) -> Config:
     entorno = os.environ if entorno is None else entorno
     return Config(
@@ -104,6 +142,13 @@ def cargar_config(entorno=None) -> Config:
                                 RANGO_TRABAJO_LEASE_S),
         trabajo_max_intentos=_entero(entorno, "TRABAJO_MAX_INTENTOS",
                                      TRABAJO_MAX_INTENTOS_POR_DEFECTO, RANGO_TRABAJO_MAX_INTENTOS),
+        api_pacientes_url=api_pacientes_url(entorno),
+        api_pacientes_token=api_pacientes_token(entorno),
+        pacientes_limite_por_min=_entero(entorno, "PACIENTES_LIMITE_POR_MIN",
+                                         PACIENTES_LIMITE_POR_MIN_POR_DEFECTO,
+                                         RANGO_PACIENTES_LIMITE_POR_MIN),
+        pacientes_max_paginas=_entero(entorno, "PACIENTES_MAX_PAGINAS",
+                                      PACIENTES_MAX_PAGINAS_POR_DEFECTO, RANGO_PACIENTES_MAX_PAGINAS),
     )
 
 

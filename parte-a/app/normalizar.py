@@ -1,6 +1,7 @@
 """Normalización y validación de campos del lead. Funciones puras, sin acceso a la base."""
 import re
 import unicodedata
+from collections import Counter
 
 import phonenumbers
 
@@ -98,6 +99,41 @@ def clave_nombre(valor) -> str:
     descompuesto = unicodedata.normalize("NFKD", normalizar_nombre(valor))
     sin_tildes = "".join(c for c in descompuesto if not unicodedata.combining(c))
     return " ".join(sin_tildes.lower().split())
+
+
+PARTICULAS_NOMBRE = frozenset({"de", "del", "la", "las", "los", "y"})
+MIN_PALABRAS_NOMBRE = 2  # un nombre de una sola palabra nunca identifica a una persona
+
+
+def palabras_nombre(valor) -> tuple[str, ...]:
+    """Palabras del nombre sin tildes ni mayúsculas, sin partículas (de, del, la, ...)."""
+    return tuple(p for p in clave_nombre(valor).split() if p not in PARTICULAS_NOMBRE)
+
+
+def _contenido(corto: Counter, largo: Counter) -> bool:
+    return all(largo[p] >= k for p, k in corto.items())
+
+
+def elegir_por_nombre(nombre_lead, nombres_candidatos) -> int | None:
+    """D7.2: índice de la única candidata compatible con el lead, o None (ambigua).
+
+    Una candidata es compatible si tiene las mismas palabras (en cualquier orden) o si todas
+    las palabras del nombre más corto están en el más largo y el más corto tiene al menos
+    2 palabras (D7.1). La coincidencia exacta NO tiene prioridad (D7.2): si hay más de una
+    compatible, es ambigua. Un lead vacío o de una sola palabra nunca confirma.
+    Las palabras se cuentan ("Carla Carla" no está contenido en "Carla Mendoza").
+    """
+    lead = Counter(palabras_nombre(nombre_lead))
+    if sum(lead.values()) < MIN_PALABRAS_NOMBRE:
+        return None
+    compatibles = []
+    for i, nombre in enumerate(nombres_candidatos):
+        c = Counter(palabras_nombre(nombre))
+        # La igualdad exacta es el caso en que cada uno contiene al otro.
+        corto, largo = (c, lead) if sum(c.values()) <= sum(lead.values()) else (lead, c)
+        if sum(corto.values()) >= MIN_PALABRAS_NOMBRE and _contenido(corto, largo):
+            compatibles.append(i)
+    return compatibles[0] if len(compatibles) == 1 else None
 
 
 def normalizar_texto(valor) -> str | None:
