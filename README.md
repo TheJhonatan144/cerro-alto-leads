@@ -65,7 +65,7 @@ del entorno de la shell tiene prioridad sobre el `.env`. Un valor mal escrito o 
 python -m pytest -q
 ```
 
-Resultado esperado: todos en verde (**1071 passed** en el cierre del Bloque 6; tarda alrededor de
+Resultado esperado: todos en verde (**1123 passed** en el cierre del Bloque 6; tarda alrededor de
 un minuto). Los tests no leen tu `.env`, bloquean cualquier conexión que no sea a loopback y usan
 dobles para la API de pacientes, el LLM, Telegram y n8n. El aviso de deprecación de
 `TestClient`/`httpx` es conocido y no afecta.

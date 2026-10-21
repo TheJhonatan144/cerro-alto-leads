@@ -10,20 +10,34 @@ import unicodedata
 from app import agenda
 from app import normalizar as n
 from app.datos_reglas import ETIQUETAS
-
-_URL_CAMPO = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+# Mismo patrón lineal ya auditado del enmascarado (Paso 0b): con protocolo, www. y dominios
+# sin protocolo ("evil.com/login", "bit.ly/abc").
+from app.enmascarar import _ENLACE as _URL_CAMPO
+_CON_PROTOCOLO = re.compile(r"https?://|www\.", re.IGNORECASE)
 _ETIQUETA_HTML = re.compile(r"<[^>]*>")
 _TELEFONO_PERMITIDO = set("0123456789+ ()-")
 MARCA_ENLACE = "[enlace]"
 MAX_NOMBRE, MAX_SERVICIO, MAX_TELEFONO, MAX_CORREO, MAX_OTRO = 80, 60, 30, 120, 200
 
 
+def _enlace(m: re.Match) -> str:
+    """[enlace], salvo el dominio de un correo ("carla@example.com", el contacto) y un
+    "dominio" que sigue con letras ("Ma.Coello": el patrón no exige fin de palabra tras el
+    TLD). La URL de agenda configurada (AGENDA_URL) no pasa por aquí: va por plantilla."""
+    t, i, j = m.string, m.start(), m.end()
+    if _CON_PROTOCOLO.match(m.group(0)):
+        return MARCA_ENLACE
+    if (i > 0 and t[i - 1] == "@" and "/" not in m.group(0)) or (j < len(t) and t[j].isalnum()):
+        return m.group(0)
+    return MARCA_ENLACE
+
+
 def limpiar_campo(texto, maxlen: int) -> str:
     """D17: NFC; sin caracteres de formato (Cf: bidireccionales, ceros de ancho) ni de control
     (Cc); los saltos de línea, tabulaciones y demás espacios pasan a un espacio; espacios
-    colapsados; URLs -> [enlace]; recorte a maxlen con "…". Decisión extra: también quita
-    etiquetas HTML (<…>) conservando su contenido, por si un canal (p. ej. un correo de n8n)
-    interpretara HTML."""
+    colapsados; URLs y dominios sin protocolo -> [enlace]; recorte a maxlen con "…". Decisión
+    extra: también quita etiquetas HTML (<…>) conservando su contenido, por si un canal (p. ej.
+    un correo de n8n) interpretara HTML."""
     if texto is None:
         return ""
     texto = n.acotar_texto(texto if isinstance(texto, str) else str(texto))
@@ -35,7 +49,7 @@ def limpiar_campo(texto, maxlen: int) -> str:
         elif categoria not in ("Cc", "Cf"):
             limpio.append(c)
     t = _ETIQUETA_HTML.sub("", "".join(limpio))
-    t = " ".join(_URL_CAMPO.sub(MARCA_ENLACE, t).split())
+    t = " ".join(_URL_CAMPO.sub(_enlace, t).split())
     return t if len(t) <= maxlen else t[:maxlen - 1].rstrip() + "…"
 
 

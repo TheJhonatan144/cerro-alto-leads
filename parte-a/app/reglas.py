@@ -17,10 +17,15 @@ SENALES_POSITIVAS = SENALES_CALIENTES + ("interes_en_servicio",)
 # coma, signos de pregunta o exclamación, adversativas ("sin dolor, pero hinchado" sí es
 # urgencia) o una coma seguida de un inicio claro de cláusula nueva ("no puedo esperar,
 # tengo dolor"). Una coma dentro de una enumeración NO corta ("sin dolor, hinchazón ni fiebre").
+# Bloque 6.7: también cortan una coma o "y"/"e" seguidos de "solo", "solamente", "únicamente",
+# "además" o "también" ("no tengo fiebre, solo sangrado abundante") y una coma seguida de un
+# verbo conjugado afirmativo ("no tengo fiebre, sangra mucho la encía").
 _FRASES = re.compile(
     r"[.!?;\n¿¡]+"
     r"|(?<![a-z0-9])(?:pero|aunque|sin embargo|sino)(?![a-z0-9])"
-    r"|,(?=\s*(?:se me|me|tengo|estoy|siento|hay|ya)(?![a-z0-9]))"
+    r"|(?:,|(?<![a-z0-9])(?:y|e)(?![a-z0-9]))(?=\s*(?:solo|solamente|unicamente|ademas|tambien)(?![a-z0-9]))"
+    r"|,(?=\s*(?:se|me|tengo|tiene|tienen|estoy|esta|estan|siento|noto|hay|ya|sangra|sangran|duele|duelen"
+    r"|sigue|siguen|empezo|comenzo|salio)(?![a-z0-9]))"
 )
 _NEGADOR = re.compile(r"(?<![a-z0-9])(?:" + "|".join(sorted(d.NEGADORES)) + r")(?![a-z0-9])")
 _SEPARADOR_LISTA = re.compile(r",|(?<![a-z0-9])(?:ni|y|o)(?![a-z0-9])")

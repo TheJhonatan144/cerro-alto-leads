@@ -949,22 +949,22 @@ Tests nuevos: `tests/test_reproceso.py` (15), `tests/test_verificar_payloads.py`
 
 Las 10 fallas anticipadas en `FALLAS_EnvioFinal.md` (documento de la Fase 1).
 
-**[PENDIENTE] `FALLAS_EnvioFinal.md` no está en el repositorio ni en la máquina de trabajo.
-El asistente no tuvo acceso al documento, así que no rellenó la tabla para no inventar las
-fallas.** Leyenda: ✅ construido y probado · 🟡 parcial · ⛔ fuera de alcance.
+**[VERIFICAR POR EL AUTOR contra su FALLAS_EnvioFinal.md]** El asistente no tiene ese
+documento: la tabla se rellenó con los títulos y estados que dictó el autor en el Bloque 6.7.
+Leyenda: ✅ construido y probado · 🟢 construido · 🟡 parcial · ⛔ fuera de alcance.
 
 | # | Falla anticipada (Fase 1) | Estado | Dónde se resolvió |
 |---|---|---|---|
-| 1 | [COMPLETAR] | | |
-| 2 | [COMPLETAR] | | |
-| 3 | [COMPLETAR] | | |
-| 4 | [COMPLETAR] | | |
-| 5 | [COMPLETAR] | | |
-| 6 | [COMPLETAR] | | |
-| 7 | [COMPLETAR] | | |
-| 8 | [COMPLETAR] | | |
-| 9 | [COMPLETAR] | | |
-| 10 | [COMPLETAR] | | |
+| 1 | Interrupción silenciosa | 🟢 construido | Vigilancia interna (D20), `/leads/resumen` (D21) y flujo externo de Vigilancia en n8n, probado por el autor (6.4) |
+| 2 | Persistir antes de confirmar | ✅ construido y probado | 202 tras el COMMIT y 503 ante un error de SQLite (Bloque 1); tope 413 (D16) |
+| 3 | Aviso a caliente en 5 minutos | ✅ construido y probado | Bandeja de avisos (outbox), reintentos, vencimiento y latencia medida (D13, D15, D18); entrega "al menos una vez" |
+| 4 | Mala clasificación del LLM | 🟡 parcial | Reglas como piso y validación estricta de la salida (Bloques 4 y 4.1); el LLM real no se evaluó |
+| 5 | Datos personales | 🟡 parcial | Enmascarado, minimización y logs sin datos (Bloque 4, D17); sin evaluación legal (ver D10) |
+| 6 | Duplicados | 🟢 construido, regla cambiada | 7 días y mismo nombre, no 24 h (D1, Bloque 2a y "Fase 1 frente a lo construido") |
+| 7 | Entradas malformadas o sin autenticar | 🟡 parcial | Validación (Bloque 2a), saneado (D17) y tope 413 (D16); sin autenticación porque el contrato no la define |
+| 8 | Falla o ambigüedad de la API de pacientes | ✅ construido y probado con dobles | D5, D6, D7 y Bloque 3.2; la prueba real queda pendiente (6.3) |
+| 9 | LLM no disponible | ✅ construido y probado | Cae a reglas (Bloque 4) |
+| 10 | Precios o citas inventados | 🟢 construido | Plantillas sin LLM con la ficha como fuente (D11) y cita tentativa (D12) |
 
 ### Limitaciones conocidas y lo que dejé fuera
 
@@ -991,6 +991,9 @@ fallas.** Leyenda: ✅ construido y probado · 🟡 parcial · ⛔ fuera de alca
   llegan. Riesgo aceptado (Bloque 3.2).
 - Un solo proceso: el trabajador y el despachador son hilos del proceso de uvicorn. No se probó
   con varios procesos ni varias máquinas.
+- **[7]** El recorte a 20 000 caracteres (primera y última mitad) puede dejar fuera una señal
+  que esté en el centro de un mensaje enorme. Motivo: el tope acota el coste de las expresiones
+  regulares, y el formulario no permite mensajes de ese tamaño.
 
 **Avisos**
 - Entrega "al menos una vez", por notificador. Si un notificador acepta y otro falla, el que
@@ -998,6 +1001,17 @@ fallas.** Leyenda: ✅ construido y probado · 🟡 parcial · ⛔ fuera de alca
 - Los seguimientos de los tibios se redactan pero **no se envían** (5b/5c).
 - La cita tentativa sale de las reglas de la ficha, no de una agenda real (D12).
 - Un caliente reprocesado tarde tiene su aviso ya vencido (6.1).
+- **[4]** Si el hilo del despachador muere, las incidencias quedan en cola hasta el reinicio.
+  Motivo: el canal de errores lo envía ese mismo hilo; la señal la dan `/leads/resumen` (estado
+  de los hilos) y el flujo externo de Vigilancia de n8n, que no dependen de él.
+- **[5]** El presupuesto de tiempo de un envío (10 s) es compartido entre los notificadores: uno
+  lento puede dejar menos tiempo al otro dentro del mismo intento. Motivo: acota la duración
+  del intento por debajo de la lease; el notificador que se quedó sin tiempo se reintenta en el
+  intento siguiente.
+- **[8]** Tras caídas repetidas del proceso justo después de reclamar, un aviso puede superar
+  el máximo de intentos. Motivo: el intento se cuenta al reclamar; la lease se recupera y el
+  aviso se vuelve a reclamar aunque ya pase del máximo (el contador no distingue esas caídas
+  de un fallo del canal).
 
 **Lo que no probó el asistente con servicios reales**
 - La API de pacientes, los proveedores de LLM (formato de petición y respuesta), Telegram y
@@ -1044,3 +1058,57 @@ escaneo de secretos del Bloque 6.6 está más abajo.
   `REEMPLAZAR_CHAT_ID`.
 - **[L]** El escaneo es por patrones. No cubre un secreto con un formato desconocido sin nombre
   de variable que lo delate. El `.env` local del autor **no se leyó** (regla de `CLAUDE.md`).
+
+## Bloque 6.7 · Correcciones de la revisión externa
+
+Hallazgos 1, 2, 3, 6 y 9 de la revisión externa. Tests nuevos en `tests/test_bloque_6_7.py`
+(52), escritos antes del cambio: contra el código anterior fallaban 20 y pasaban 32 (los que
+fijan lo que no debía cambiar). El esquema de la base **no** cambió.
+
+### 1. `os.fchmod` solo si existe (`canales.py`)
+- **[R]** `CanalArchivo` llama a `os.fchmod` solo si existe (`hasattr`). En Windows no existe y
+  antes el `AttributeError` impedía escribir el aviso; ahora se escribe igual (los permisos
+  quedan los del sistema).
+
+### 2. Escritura completa del archivo (`canales.py`)
+- **[R]** `os.write` puede escribir menos bytes de los pedidos: `_escribir_todo` repite hasta
+  escribir la línea entera. Si una llamada no avanza (0 bytes), `ErrorCanal("temporal",
+  "archivo_sin_progreso")`: el aviso queda pendiente y se reintenta, nunca `enviado`.
+
+### 3. Vencimiento atómico (`despachador.py`, `errores.py`)
+- **[R]** `revisar_vencidos` hace la marca `vencido_notificado = 1` y la incidencia
+  `aviso_vencido` en **una** transacción `BEGIN IMMEDIATE` por aviso. Si cualquiera de las dos
+  falla, `ROLLBACK`: no queda ninguna y la siguiente vuelta lo vuelve a intentar. Se notifica una
+  sola vez en total (la marca, con `WHERE vencido_notificado = 0`, sigue siendo la guarda).
+- **[D]** Función interna nueva `errores.registrar_en_transaccion(con, …)`: misma
+  normalización y deduplicación que `reportar_error`, pero escribe en la transacción del
+  llamador y **sí** lanza si falla. Devuelve la función que deja la línea de log, que el
+  despachador llama tras el `COMMIT` (un `ROLLBACK` no deja log de algo no registrado).
+  `reportar_error` no cambió (su escritura comparte ahora `_insertar`).
+- **[D]** Sin registro en base configurado (tests, CLI), igual que `reportar_error`: solo log.
+
+### 6. Alcance de la negación en urgencias (`reglas.py`)
+- **[R]** Cortan la negación, además de lo del Bloque 4.2: una coma, "y" o "e" seguidos de
+  "solo", "sólo", "solamente", "únicamente", "además" o "también" ("no tengo fiebre, solo
+  sangrado abundante"); y una coma seguida de un verbo conjugado afirmativo de una lista corta
+  (`se`, `tiene(n)`, `esta(n)`, `noto`, `sangra(n)`, `duele(n)`, `sigue(n)`, `empezo`,
+  `comenzo`, `salio`, además de los que ya había). "pero", "aunque" y "sin embargo" ya cortaban.
+- **[R]** Siguen sin urgencia "no tengo dolor, ni hinchazón" y "no tengo fiebre, dolor ni
+  hinchazón"; todos los tests anteriores de urgencia y negación siguen igual.
+- **[L]** La lista de verbos es heurística: un verbo que no esté en ella no corta.
+
+### 9. Dominios sin protocolo en los campos (`plantillas.py`)
+- **[R]** `limpiar_campo` usa el mismo patrón lineal ya auditado de `enmascarar.py` (`_ENLACE`):
+  además de `http(s)://` y `www.`, cubre dominios sin protocolo con o sin ruta
+  (`evil.com/login`, `bit.ly/abc`) → `[enlace]`.
+- **[D]** Dos excepciones, para no alterar datos legítimos: el dominio de un correo
+  (`carla@example.com`, sin ruta) y un "dominio" seguido de letras (`Ma.Coello`: el patrón no
+  exige fin de palabra tras el TLD). "Dr. Pérez" y "J.R. Smith" no coinciden con el patrón.
+- **[D]** La URL de agenda configurada (`AGENDA_URL`) no pasa por `limpiar_campo`: la añade la
+  plantilla del seguimiento, y un test comprueba que se conserva.
+- **[R]** Auditoría de rendimiento: 15 familias adversarias de 20 000 caracteres, cada una en
+  menos de 1 s. La más lenta es `<` repetido (`_ETIQUETA_HTML`, ya existente): ~0,1 s.
+
+
+
+Prueba real (21-oct, ejecutada por el autor): 1 petición de búsqueda, HTTP 200, forma de respuesta conforme a la documentación, 0 resultados. Tratamientos y LLM real no se probaron contra servicios reales; el resto del cliente se probó con dobles.

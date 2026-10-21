@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import agenda, config, db, plantillas, vigilancia
+from app import agenda, config, db, errores, plantillas, vigilancia
 # Los adaptadores viven en app/canales.py; se reexportan aquí por compatibilidad.
 from app.canales import CanalArchivo, ErrorCanal, crear_canal  # noqa: F401
 from app.errores import reportar_error
@@ -137,15 +137,28 @@ def reclamar_incidencia(con, ahora: datetime):
 
 
 def revisar_vencidos(con, ahora: datetime) -> int:
-    """Avisos pendientes que pasaron vence_at: se notifica una sola vez por aviso."""
+    """Avisos pendientes que pasaron vence_at: se notifica una sola vez por aviso. La marca
+    vencido_notificado y la incidencia aviso_vencido van en la MISMA transacción: si una
+    falla, ninguna queda y el aviso se revisa otra vez en la siguiente vuelta."""
     notificados = 0
     for f in con.execute("""SELECT id, evento_id, tipo FROM avisos
                             WHERE estado = 'pendiente' AND vencido_notificado = 0 AND vence_at < ?""",
                          (_txt(ahora),)).fetchall():
-        cur = con.execute("UPDATE avisos SET vencido_notificado = 1 WHERE id = ? AND vencido_notificado = 0",
-                          (f["id"],))
-        if cur.rowcount == 1:
-            reportar_error("avisos", "aviso_vencido", evento_id=f["evento_id"], nivel=logging.ERROR)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            anotar = None
+            cur = con.execute("UPDATE avisos SET vencido_notificado = 1 WHERE id = ? AND vencido_notificado = 0",
+                              (f["id"],))
+            if cur.rowcount == 1:
+                anotar = errores.registrar_en_transaccion(con, "avisos", "aviso_vencido", evento_id=f["evento_id"])
+            con.execute("COMMIT")
+        except Exception as e:  # solo el tipo; se reintenta en la siguiente vuelta
+            if con.in_transaction:
+                con.execute("ROLLBACK")
+            log.warning("aviso=%s vencimiento no registrado: %s", f["id"], type(e).__name__)
+            continue
+        if anotar is not None:
+            anotar(logging.ERROR)
             notificados += 1
     return notificados
 

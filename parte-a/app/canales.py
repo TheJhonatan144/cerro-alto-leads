@@ -102,12 +102,24 @@ class CanalArchivo:
             self.ruta.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.ruta, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             try:
-                os.fchmod(fd, 0o600)  # también si el archivo ya existía con otros permisos
-                os.write(fd, linea.encode("utf-8"))
+                if hasattr(os, "fchmod"):  # no existe en Windows: allí se escribe igual
+                    os.fchmod(fd, 0o600)  # también si el archivo ya existía con otros permisos
+                _escribir_todo(fd, linea.encode("utf-8"))
             finally:
                 os.close(fd)
         except OSError:
             raise ErrorCanal("temporal", "archivo_no_escribible") from None
+
+
+def _escribir_todo(fd: int, datos: bytes) -> None:
+    """os.write puede escribir menos bytes de los pedidos: se repite hasta escribirlos todos.
+    Sin progreso, ErrorCanal temporal (el aviso no cuenta como enviado)."""
+    pendiente = memoryview(datos)
+    while pendiente:
+        escritos = os.write(fd, pendiente)
+        if escritos <= 0:
+            raise ErrorCanal("temporal", "archivo_sin_progreso")
+        pendiente = pendiente[escritos:]
 
 
 class CanalTelegram:
