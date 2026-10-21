@@ -77,11 +77,15 @@ class Limitador:
 
 
 class Presupuesto:
-    """Tiempo total de una etapa (reloj monotónico). Cada petición usa min(5 s, restante)."""
+    """Tiempo total de una etapa (reloj monotónico). Cada petición usa min(lectura_max, restante)
+    de lectura y min(conexion_max, restante) de conexión."""
 
-    def __init__(self, total_s: float, reloj=time.monotonic):
+    def __init__(self, total_s: float, reloj=time.monotonic, *,
+                 lectura_max: float = TIMEOUT_LECTURA_S, conexion_max: float = TIMEOUT_CONEXION_S):
         self._reloj = reloj
         self._fin = reloj() + total_s
+        self.lectura_max = lectura_max
+        self.conexion_max = conexion_max
 
     def restante(self) -> float:
         return self._fin - self._reloj()
@@ -90,8 +94,8 @@ class Presupuesto:
         restante = self.restante()
         if restante <= 0:
             raise ApiNoDisponible("tiempo_agotado")
-        return httpx.Timeout(min(TIMEOUT_LECTURA_S, restante),
-                             connect=min(TIMEOUT_CONEXION_S, restante))
+        return httpx.Timeout(min(self.lectura_max, restante),
+                             connect=min(self.conexion_max, restante))
 
 
 @dataclass(frozen=True)
@@ -112,21 +116,25 @@ class Tratamiento:
     estado: str
 
 
-def _retry_after(valor: str | None) -> int | None:
-    """Segundos (1..120) o None si falta, es inválido o supera el tope (se degrada).
+def segundos_retry_after(valor: str | None, maximo: int) -> int | None:
+    """Segundos (1..maximo) o None si falta, es inválido o supera el tope (se degrada).
     Solo dígitos y con longitud acotada: nunca convierte enteros enormes."""
     texto = (valor or "").strip()
     if not texto or len(texto) > RETRY_AFTER_MAX_DIGITOS or not (texto.isascii() and texto.isdigit()):
         return None
     segundos = int(texto)
-    return max(1, segundos) if segundos <= RETRY_AFTER_MAX_S else None
+    return max(1, segundos) if segundos <= maximo else None
+
+
+def _retry_after(valor: str | None) -> int | None:
+    return segundos_retry_after(valor, RETRY_AFTER_MAX_S)
 
 
 def _forma():
     return ApiNoDisponible("forma_inesperada")
 
 
-def _decodificar(cuerpo: bytes):
+def decodificar_json(cuerpo: bytes):
     try:
         return json.loads(cuerpo)
     except (ValueError, RecursionError):  # incluye UTF-8 inválido y JSON anidado sin fin
@@ -192,15 +200,16 @@ def _validar_pagina(cuerpo, validar):
     return [validar(x) for x in cuerpo["data"]], siguiente, advertencia
 
 
-def _leer(r: httpx.Response, presupuesto: Presupuesto) -> bytes:
-    """Lee el cuerpo por trozos comprobando el presupuesto total y el tamaño máximo."""
+def leer_acotado(r: httpx.Response, presupuesto: Presupuesto, max_bytes: int = MAX_CUERPO_BYTES) -> bytes:
+    """Lee el cuerpo por trozos comprobando el presupuesto total y el tamaño máximo.
+    La reutiliza el cliente del LLM (app/llm.py)."""
     largo = r.headers.get("Content-Length", "")
-    if largo.isdigit() and (len(largo) > 9 or int(largo) > MAX_CUERPO_BYTES):
+    if largo.isdigit() and (len(largo) > 9 or int(largo) > max_bytes):
         raise ApiNoDisponible("respuesta_demasiado_grande")
     cuerpo = bytearray()
     for trozo in r.iter_bytes():  # ya descomprimido: el tope también vale para gzip
         cuerpo += trozo
-        if len(cuerpo) > MAX_CUERPO_BYTES:
+        if len(cuerpo) > max_bytes:
             raise ApiNoDisponible("respuesta_demasiado_grande")
         if presupuesto.restante() <= 0:
             raise ApiNoDisponible("timeout", transitorio=True)
@@ -237,10 +246,10 @@ class ClientePacientes:
         timeout = presupuesto.timeout()
         self.limitador.tomar()
         try:
-            # En streaming: httpx limita cada lectura, no el total; _leer vigila el total.
+            # En streaming: httpx limita cada lectura, no el total; leer_acotado vigila el total.
             with self._http.stream("GET", ruta, params=params, timeout=timeout) as r:
                 if r.status_code == 200:
-                    return _decodificar(_leer(r, presupuesto))
+                    return decodificar_json(leer_acotado(r, presupuesto))
                 estado, retry_after = r.status_code, r.headers.get("Retry-After")
         # "from None": el mensaje encadenado podría incluir la URL con teléfono y correo.
         except httpx.TimeoutException:

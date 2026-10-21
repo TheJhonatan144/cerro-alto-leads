@@ -18,6 +18,9 @@ TRABAJO_LEASE_S_POR_DEFECTO = 60
 TRABAJO_MAX_INTENTOS_POR_DEFECTO = 5
 PACIENTES_LIMITE_POR_MIN_POR_DEFECTO = 25
 PACIENTES_MAX_PAGINAS_POR_DEFECTO = 5
+LLM_PROVEEDORES = ("none", "gemini", "anthropic", "openai")
+LLM_TIMEOUT_S_POR_DEFECTO = 10.0
+LLM_CONFIANZA_BASURA_POR_DEFECTO = 0.8
 
 # Rangos admitidos (mínimo, máximo), ambos incluidos.
 RANGO_DUPLICADO_VENTANA_DIAS = (1, 90)
@@ -26,6 +29,9 @@ RANGO_TRABAJO_LEASE_S = (10, 3600)
 RANGO_TRABAJO_MAX_INTENTOS = (1, 20)
 RANGO_PACIENTES_LIMITE_POR_MIN = (1, 30)  # la API admite 30/min por token
 RANGO_PACIENTES_MAX_PAGINAS = (1, 20)
+RANGO_LLM_TIMEOUT_S = (2.0, 30.0)
+RANGO_LLM_CONFIANZA_BASURA = (0.5, 1.0)
+_MODELO = re.compile(r"[A-Za-z0-9._:-]{1,100}")
 
 _ENTERO = re.compile(r"[+-]?[0-9]+")
 _DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)")  # sin exponentes, inf ni nan
@@ -48,6 +54,11 @@ class Config:
     api_pacientes_token: str | None = field(default=None, repr=False)
     pacientes_limite_por_min: int = PACIENTES_LIMITE_POR_MIN_POR_DEFECTO
     pacientes_max_paginas: int = PACIENTES_MAX_PAGINAS_POR_DEFECTO
+    llm_proveedor: str = "none"
+    llm_modelo: str | None = None
+    llm_api_key: str | None = field(default=None, repr=False)  # nunca en el repr
+    llm_timeout_s: float = LLM_TIMEOUT_S_POR_DEFECTO
+    llm_confianza_basura: float = LLM_CONFIANZA_BASURA_POR_DEFECTO
 
     @property
     def pacientes_configurada(self) -> bool:
@@ -130,6 +141,34 @@ def api_pacientes_token(entorno=None) -> str | None:
     return valor
 
 
+def _texto_cabecera(entorno, nombre: str) -> str | None:
+    """Valor apto para una cabecera HTTP (ASCII imprimible sin espacios). El error no lo muestra."""
+    valor = _valor(entorno, nombre)
+    if not valor:
+        return None
+    if not all(33 <= ord(c) <= 126 for c in valor):
+        raise ConfigError(f"{nombre} tiene caracteres no válidos para una cabecera")
+    return valor
+
+
+def llm(entorno=None) -> tuple[str, str | None, str | None]:
+    """(proveedor, modelo, clave). Modelo y clave solo son obligatorios si el proveedor no es none."""
+    entorno = os.environ if entorno is None else entorno
+    proveedor = _valor(entorno, "LLM_PROVIDER").lower() or "none"
+    if proveedor not in LLM_PROVEEDORES:
+        raise ConfigError("LLM_PROVIDER debe ser uno de: " + ", ".join(LLM_PROVEEDORES))
+    modelo = _valor(entorno, "LLM_MODEL") or None
+    clave = _texto_cabecera(entorno, "LLM_API_KEY")
+    if modelo is not None and not _MODELO.fullmatch(modelo):
+        raise ConfigError("LLM_MODEL tiene un formato inválido (letras, dígitos, . _ : -)")
+    if proveedor != "none":
+        if modelo is None:
+            raise ConfigError("LLM_MODEL es obligatorio si LLM_PROVIDER no es none")
+        if clave is None:
+            raise ConfigError("LLM_API_KEY es obligatoria si LLM_PROVIDER no es none")
+    return proveedor, modelo, clave
+
+
 def cargar_config(entorno=None) -> Config:
     entorno = os.environ if entorno is None else entorno
     return Config(
@@ -149,6 +188,10 @@ def cargar_config(entorno=None) -> Config:
                                          RANGO_PACIENTES_LIMITE_POR_MIN),
         pacientes_max_paginas=_entero(entorno, "PACIENTES_MAX_PAGINAS",
                                       PACIENTES_MAX_PAGINAS_POR_DEFECTO, RANGO_PACIENTES_MAX_PAGINAS),
+        **dict(zip(("llm_proveedor", "llm_modelo", "llm_api_key"), llm(entorno))),
+        llm_timeout_s=_decimal(entorno, "LLM_TIMEOUT_S", LLM_TIMEOUT_S_POR_DEFECTO, RANGO_LLM_TIMEOUT_S),
+        llm_confianza_basura=_decimal(entorno, "LLM_CONFIANZA_BASURA",
+                                      LLM_CONFIANZA_BASURA_POR_DEFECTO, RANGO_LLM_CONFIANZA_BASURA),
     )
 
 

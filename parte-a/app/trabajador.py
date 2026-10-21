@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import config, db, enriquecimiento, procesador
+from app import config, db, enriquecimiento, etapa_clasificar, procesador
 from app.errores import MAX_REPROGRAMACIONES, Reprogramar
+from app.llm import ClienteLLM, Prompt, cargar_prompt
 from app.pacientes import ClientePacientes
 
 log = logging.getLogger("leads.trabajador")
@@ -37,18 +38,27 @@ class Contexto:
     """Recursos compartidos por las etapas durante la vida del trabajador."""
     cfg: config.Config
     pacientes: ClientePacientes | None = None  # None: API no configurada
+    llm: ClienteLLM | None = None              # None: LLM_PROVIDER=none (solo reglas)
+    prompt: Prompt | None = None
 
     def cerrar(self) -> None:
-        if self.pacientes is not None:
-            self.pacientes.cerrar()
+        for cliente in (self.pacientes, self.llm):
+            if cliente is not None:
+                cliente.cerrar()
 
 
 def crear_contexto(cfg: config.Config) -> Contexto:
-    if not cfg.pacientes_configurada:
-        return Contexto(cfg)
-    return Contexto(cfg, ClientePacientes(cfg.api_pacientes_url, cfg.api_pacientes_token,
-                                          limite_por_min=cfg.pacientes_limite_por_min,
-                                          max_paginas=cfg.pacientes_max_paginas))
+    pacientes = None
+    if cfg.pacientes_configurada:
+        pacientes = ClientePacientes(cfg.api_pacientes_url, cfg.api_pacientes_token,
+                                     limite_por_min=cfg.pacientes_limite_por_min,
+                                     max_paginas=cfg.pacientes_max_paginas)
+    llm, prompt = None, None
+    if cfg.llm_proveedor != "none":
+        prompt = cargar_prompt()  # si falta el archivo, falla al arrancar
+        llm = ClienteLLM(cfg.llm_proveedor, cfg.llm_modelo, cfg.llm_api_key,
+                         timeout_s=cfg.llm_timeout_s)
+    return Contexto(cfg, pacientes, llm, prompt)
 
 
 def _normalizar_y_duplicados(con, trabajo, ctx: Contexto) -> None:
@@ -56,11 +66,12 @@ def _normalizar_y_duplicados(con, trabajo, ctx: Contexto) -> None:
                                ventana_dias=ctx.cfg.duplicado_ventana_dias)
 
 
-# Orden de ejecución. Las siguientes (clasificación, revisión de mensajes de duplicados,
-# avisos) se añaden aquí sin tocar el resto del módulo.
+# Orden de ejecución. Las siguientes (avisos, Bloque 5) se añaden aquí sin tocar el resto
+# del módulo. La última etapa cierra el evento (procesado con ruta).
 ETAPAS: list[Etapa] = [
     Etapa("normalizar_y_duplicados", _normalizar_y_duplicados),
     Etapa(enriquecimiento.NOMBRE, enriquecimiento.enriquecer_paciente),
+    Etapa(etapa_clasificar.NOMBRE, etapa_clasificar.clasificar_lead),
 ]
 
 

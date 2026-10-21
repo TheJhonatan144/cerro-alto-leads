@@ -145,10 +145,10 @@ def test_exito_trabajo_hecho_y_lead_creado(cliente, con, ruta_db):
     assert procesar_pendientes(ruta_db, ahora_tras_recibir()) == 1
     t = trabajo_de(con, i)
     assert t["estado"] == "hecho"
-    assert t["etapa"] == "enriquecer_paciente"  # última etapa (Bloque 3)
+    assert t["etapa"] == "clasificar_lead"  # última etapa (Bloque 4)
     assert t["intentos"] == 1 and t["lease_hasta"] is None
     e = evento(con, i)
-    assert e["estado"] == "pendiente"  # las etapas siguientes llegan en otros bloques
+    assert e["estado"] == "procesado" and e["ruta"] is not None  # Bloque 4 cierra el evento
     assert e["lead_id"] is not None and e["telefono_e164"] == "+593991234567"
     assert con.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
 
@@ -368,7 +368,7 @@ def test_diez_payloads_con_el_trabajador_real(ruta_db, monkeypatch):
         assert ev("07")["telefono_e164"] == "+593987654321"
         assert ev("08")["telefono_e164"] is None and ev("08")["email"] == "promo@ganadinero.example"
         for n in ("01", "04", "05", "06", "07", "08", "09", "10"):
-            assert ev(n)["estado"] == "pendiente" and ev(n)["lead_id"] is not None, n
+            assert ev(n)["estado"] == "procesado" and ev(n)["lead_id"] is not None, n
         assert con.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 8
         assert con.execute("SELECT COUNT(*) FROM lead_mensajes").fetchone()[0] == 1
     finally:
@@ -433,7 +433,7 @@ def test_2b1_reextraccion_que_choca_es_reenvio(cliente, con, ruta_db):
     assert e1["duplicado_de"] == EVT_01
     assert "reenvío" in e1["motivo"].lower()
     assert "carla" not in e1["motivo"].lower() and "099" not in e1["motivo"]
-    assert evento(con, i2)["estado"] == "pendiente" and evento(con, i2)["lead_id"] is not None
+    assert evento(con, i2)["estado"] == "procesado" and evento(con, i2)["lead_id"] is not None
     assert con.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
 
 
@@ -459,7 +459,7 @@ def test_2b1_cuerpo_sin_event_id_sigue_como_d3(cliente, con, ruta_db):
         "full_name": "Ana", "phone": "0991112233"}}).encode())
     procesar_pendientes(ruta_db, ahora_tras_recibir())
     assert evento(con, i)["event_id"] is None
-    assert evento(con, i)["estado"] == "pendiente" and evento(con, i)["lead_id"] is not None
+    assert evento(con, i)["estado"] == "procesado" and evento(con, i)["lead_id"] is not None
 
 
 # 2) Comprobación de dueño antes de cada etapa

@@ -127,6 +127,40 @@ CREATE TABLE IF NOT EXISTS enriquecimientos (
     CHECK (estado_enriquecimiento NOT IN ('no_disponible', 'no_configurado', 'ambigua')
         OR (motivo IS NOT NULL AND motivo <> ''))
 );
+
+-- Clasificación del lead (una fila por evento, UPSERT). Sin el mensaje (ni enmascarado) ni la
+-- respuesta cruda del LLM: solo el resultado validado y, si falló, el tipo de fallo.
+CREATE TABLE IF NOT EXISTS clasificaciones (
+    evento_id                INTEGER PRIMARY KEY REFERENCES eventos(id),
+    lead_id                  TEXT NOT NULL REFERENCES leads(lead_id),
+    ruta                     TEXT NOT NULL CHECK (ruta IN ('caliente', 'tibio', 'basura')),
+    fuente                   TEXT NOT NULL CHECK (fuente IN ('llm', 'reglas')),
+    senales                  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(senales)),
+    intencion                TEXT,
+    urgencia                 TEXT,
+    presupuesto_estimado_usd REAL CHECK (presupuesto_estimado_usd IS NULL
+        OR presupuesto_estimado_usd BETWEEN 0 AND 20000),
+    siguiente_accion         TEXT NOT NULL,
+    confianza                REAL CHECK (confianza IS NULL OR confianza BETWEEN 0 AND 1),
+    motivo                   TEXT NOT NULL CHECK (motivo <> ''),
+    prompt_version           TEXT,
+    prompt_hash              TEXT,
+    proveedor                TEXT,
+    modelo                   TEXT,
+    fallo_llm                TEXT,
+    clasificado_at           TEXT NOT NULL,
+    CHECK (fuente = 'reglas' OR (prompt_version IS NOT NULL AND prompt_hash IS NOT NULL))
+);
+
+-- D4: mensaje nuevo de un duplicado con una señal caliente que el original no tenía. El
+-- Bloque 5 lo avisará como "actualización de un lead existente".
+CREATE TABLE IF NOT EXISTS novedades_duplicado (
+    evento_id    INTEGER PRIMARY KEY REFERENCES eventos(id),
+    duplicado_de TEXT NOT NULL,
+    lead_id      TEXT NOT NULL,
+    senales      TEXT NOT NULL CHECK (json_valid(senales)),
+    creada_at    TEXT NOT NULL
+);
 """
 
 

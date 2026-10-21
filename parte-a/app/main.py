@@ -77,6 +77,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     if not cfg.pacientes_configurada:
         log.warning("API de pacientes no configurada (API_PACIENTES_URL o API_PACIENTES_TOKEN "
                     "vacías): los leads quedarán con enriquecimiento=no_configurado")
+    if cfg.llm_proveedor == "none":
+        log.warning("LLM_PROVIDER=none: clasificación solo con reglas")
     ruta = Path(db_path) if db_path else cfg.db_path
     db.inicializar(ruta)
 
