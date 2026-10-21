@@ -60,7 +60,7 @@ Algunos ejemplos documentados en `DECISIONES.md`:
 Lo que verificó personalmente el autor (cada casilla marcada la ejecutó o comprobó él):
 
 - [x] Ejecuté `python -m pytest -q` en mi máquina. Resultado: 1125 passed, 1 warning (≈ 41 s), 21-oct.
-- [ ] Seguí el README en una máquina o directorio limpio. Resultado: [COMPLETAR POR EL AUTOR]
+- [x] Seguí el README en un directorio limpio (clon del último commit, sin `.env`): instalar dependencias, `pytest` (1144 passed), arrancar, enviar los payloads y `verificar_payloads` (10/10), 21-oct.
 - [x] Ejecuté `scripts/prueba_humo_real.py` (sin `--llm`) con mi token. Resultado (solo códigos y claves): búsqueda HTTP 200, claves `data` y `next_cursor`, 0 elementos; tratamientos omitidos (no había exactamente un paciente). `--llm` NO se ejecutó.
 - [x] Probé los flujos de n8n (avisos, errores y vigilancia) con mi propio Telegram. Resultado: los tres funcionaron; avisos de lead caliente recibidos y mensaje de vigilancia recibido con el servidor caído.
 - [x] Leí los archivos de `parte-a/app/` (con distinta profundidad).
