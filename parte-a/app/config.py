@@ -21,6 +21,7 @@ PACIENTES_MAX_PAGINAS_POR_DEFECTO = 5
 LLM_PROVEEDORES = ("none", "gemini", "anthropic", "openai")
 LLM_TIMEOUT_S_POR_DEFECTO = 10.0
 LLM_CONFIANZA_BASURA_POR_DEFECTO = 0.8
+WEBHOOK_MAX_BYTES_POR_DEFECTO = 262_144  # 256 KiB (D16)
 
 # Rangos admitidos (mínimo, máximo), ambos incluidos.
 RANGO_DUPLICADO_VENTANA_DIAS = (1, 90)
@@ -31,6 +32,7 @@ RANGO_PACIENTES_LIMITE_POR_MIN = (1, 30)  # la API admite 30/min por token
 RANGO_PACIENTES_MAX_PAGINAS = (1, 20)
 RANGO_LLM_TIMEOUT_S = (2.0, 30.0)
 RANGO_LLM_CONFIANZA_BASURA = (0.5, 1.0)
+RANGO_WEBHOOK_MAX_BYTES = (4096, 4_194_304)  # 4 KiB a 4 MiB
 _MODELO = re.compile(r"[A-Za-z0-9._:-]{1,100}")
 
 _ENTERO = re.compile(r"[+-]?[0-9]+")
@@ -59,6 +61,7 @@ class Config:
     llm_api_key: str | None = field(default=None, repr=False)  # nunca en el repr
     llm_timeout_s: float = LLM_TIMEOUT_S_POR_DEFECTO
     llm_confianza_basura: float = LLM_CONFIANZA_BASURA_POR_DEFECTO
+    webhook_max_bytes: int = WEBHOOK_MAX_BYTES_POR_DEFECTO
 
     @property
     def pacientes_configurada(self) -> bool:
@@ -192,6 +195,8 @@ def cargar_config(entorno=None) -> Config:
         llm_timeout_s=_decimal(entorno, "LLM_TIMEOUT_S", LLM_TIMEOUT_S_POR_DEFECTO, RANGO_LLM_TIMEOUT_S),
         llm_confianza_basura=_decimal(entorno, "LLM_CONFIANZA_BASURA",
                                       LLM_CONFIANZA_BASURA_POR_DEFECTO, RANGO_LLM_CONFIANZA_BASURA),
+        webhook_max_bytes=_entero(entorno, "WEBHOOK_MAX_BYTES", WEBHOOK_MAX_BYTES_POR_DEFECTO,
+                                  RANGO_WEBHOOK_MAX_BYTES),
     )
 
 

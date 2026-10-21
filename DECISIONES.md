@@ -573,3 +573,28 @@ Cada punto se demostró primero con un test que fallaba contra el código del 4.
 
 ### Tests
 - `tests/test_bloque_4_2.py`: 48 tests (documentos, falsos positivos, negación en listas y su conservación, NFC, correos con espacios y `@` sueltas, 12 entradas adversarias, tope que conserva el inicio y el final).
+
+## Paso 0 (antes del Bloque 5a) · Cierres pendientes del 4.2
+
+### D16 · Tope de tamaño del cuerpo del webhook
+- **Motivo:** el webhook no tiene autenticación y hay un solo trabajador. Sin tope, cualquiera podía enviar un cuerpo enorme, que se leía entero en memoria y se guardaba en `cuerpo_crudo`. Los payloads de ejemplo ocupan menos de 1 KB, salvo el más largo (el 07), con 5,2 KB: el tope por defecto les deja un margen de unas 50 veces.
+- **[D]** `WEBHOOK_MAX_BYTES`, por defecto **262 144** (256 KiB), rango de 4096 a 4 194 304, validada al arrancar y documentada en `.env.example`.
+- **[D]** En `POST /webhook/leads`:
+  - `Content-Length` mayor que el tope → **413 sin leer el cuerpo**.
+  - Sin `Content-Length` (chunked), o con un `Content-Length` menor que el real → lectura en streaming (`request.stream()`) que acumula y aborta con **413** en cuanto se pasa el tope.
+  - `Content-Length` no numérico, negativo, con signo, decimal, vacío o con dígitos no ASCII → **400**. Un número de más de 12 dígitos se trata como "mayor que el tope" (413), sin convertir enteros enormes.
+- **[D]** El 413 **no persiste nada** (ni evento ni trabajo), **no repite el cuerpo** en la respuesta y solo registra el tamaño: el declarado, o "más de N" si se cortó leyendo; **nunca el contenido**.
+- **[S] Conector:** un 413 es un error del cliente; se asume que el conector reintenta según su política y termina **descartando** el envío, sin que el sistema llegue a ver el lead. Es aceptable porque ningún lead legítimo se acerca a 256 KiB, y el límite es configurable si hiciera falta.
+- **[R]** El contrato existente no cambia: 202 (nuevo), 200 (repetido) y 503 (sin persistencia); un cuerpo no JSON sigue siendo 202 con estado `rechazado`.
+- **[Probado]** Tests con `TestClient` (justo en el tope → 202; tope + 1 → 413; chunked; `Content-Length` declarado menor que el real; inválidos; base intacta tras un 413; rangos de configuración). También contra uvicorn real con un socket crudo:
+  - 10 MB declarados y ningún byte de cuerpo enviado → 413 en 1 ms, sin esperar al cuerpo;
+  - chunked de 8 KiB con tope de 4 KiB → 413;
+  - 4096 bytes exactos → 202;
+  - `Content-Length: abc` → 400, que en el servidor real lo rechaza antes el parser HTTP de uvicorn (h11);
+  - en la base solo quedó el evento aceptado.
+
+### Auditoría de rendimiento por familias (0b)
+- **[Probado]** `tests/test_auditoria_rendimiento.py`: **29 familias**, cada una repetida hasta 20 000 caracteres y hasta 1 MiB (**58 entradas**), pasadas por reglas + enmascarado. Cada entrada debe tardar menos de 1 s; las 58 juntas tardaron 0,83 s. **Ninguna superó 1 s**, así que no hubo correcciones en este paso.
+- Familias auditadas: `"a"`, `"a."`, `"a-"`, `"a@"`, `"@a"`, `"a@a."`, `".a"`, `"7"`, `"7."`, `"7 "`, `"1-"`, `"ab "`, `"A1 "`, `"AB 1"`, `"+5"`, `"+593 "`, `"0 "`, `", "`, `" no "`, `"no, "`, `"sin "`, `"ni "`, `"dolor "`, `"("`, `"["`, `"<<<"`, `"http://"`, `"www."`, `"https://a."`.
+- **[L]** Son patrones repetidos de una sola familia. No se probaron mezclas entre familias ni entradas generadas por fuzzing; el tope de 20 000 caracteres sigue acotando el peor caso de cualquier patrón no auditado.
+

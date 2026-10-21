@@ -60,6 +60,41 @@ def _error(codigo: int, detalle: str, **headers) -> JSONResponse:
     return JSONResponse(status_code=codigo, content={"detail": detalle}, headers=headers or None)
 
 
+class CuerpoDemasiadoGrande(Exception):
+    def __init__(self, tamano: str):
+        super().__init__(tamano)
+        self.tamano = tamano  # texto para el log: "5000" o "más de 4096"
+
+
+class ContentLengthInvalido(Exception):
+    pass
+
+
+MAX_DIGITOS_CONTENT_LENGTH = 12  # más dígitos ya supera cualquier tope; evita convertir enteros enormes
+
+
+async def leer_cuerpo_acotado(request: Request, maximo: int) -> bytes:
+    """D16: lee el cuerpo sin pasar de 'maximo' bytes.
+
+    Con Content-Length mayor que el tope se rechaza sin leer nada. Sin Content-Length
+    (chunked), o si el declarado es menor que el real, se lee en streaming y se aborta en
+    cuanto se pasa el tope.
+    """
+    declarado = request.headers.get("content-length")
+    if declarado is not None:
+        texto = declarado.strip()
+        if not texto or not (texto.isascii() and texto.isdigit()):
+            raise ContentLengthInvalido()
+        if len(texto) > MAX_DIGITOS_CONTENT_LENGTH or int(texto) > maximo:
+            raise CuerpoDemasiadoGrande(texto if len(texto) <= MAX_DIGITOS_CONTENT_LENGTH else f"más de {maximo}")
+    cuerpo = bytearray()
+    async for trozo in request.stream():
+        cuerpo += trozo
+        if len(cuerpo) > maximo:
+            raise CuerpoDemasiadoGrande(f"más de {maximo}")
+    return bytes(cuerpo)
+
+
 def _sin_persistencia(e: Exception) -> JSONResponse:
     # Solo el tipo de error: nunca datos del lead en los logs.
     log.error("no se pudo persistir: %s", type(e).__name__)
@@ -140,7 +175,15 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     @app.post("/webhook/leads")
     async def recibir_lead(request: Request):
-        cuerpo = await request.body()
+        try:
+            cuerpo = await leer_cuerpo_acotado(request, cfg.webhook_max_bytes)
+        except CuerpoDemasiadoGrande as e:
+            # No se guarda nada ni se repite el cuerpo: solo el tamaño, nunca el contenido.
+            log.warning("cuerpo rechazado por tamaño: %s bytes (máximo %d)", e.tamano, cfg.webhook_max_bytes)
+            return _error(413, f"el cuerpo supera el máximo de {cfg.webhook_max_bytes} bytes")
+        except ContentLengthInvalido:
+            log.warning("cabecera Content-Length inválida")
+            return _error(400, "Content-Length inválido")
         try:
             r = await run_in_threadpool(_recibir, cuerpo)
         except Exception as e:  # SQLite o fallo del guardado de respaldo: nada persistido
