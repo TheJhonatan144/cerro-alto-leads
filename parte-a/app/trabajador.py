@@ -17,6 +17,8 @@ log = logging.getLogger("leads.trabajador")
 
 # Espera antes del reintento n (1-based); el último valor se repite.
 ESPERAS_REINTENTO_S = (30, 120, 600, 1800)
+# Pausa fija tras un error inesperado del bucle (no depende de la configuración).
+ESPERA_TRAS_ERROR_S = 1.0
 
 
 @dataclass(frozen=True)
@@ -149,13 +151,41 @@ def _registrar_fallo(con, trabajo, tipo_error: str, ahora: datetime) -> str:
     return resultado
 
 
-def ejecutar_trabajo(con, trabajo, ahora: datetime, cfg: config.Config | None = None) -> str:
-    """Corre las etapas que faltan. Devuelve 'hecho', 'pendiente', 'fallido' o 'perdido'."""
+def _reloj(ahora) -> Callable[[], datetime]:
+    """'ahora' puede ser un instante fijo, un reloj (callable) o None (reloj real)."""
+    if callable(ahora):
+        return ahora
+    if ahora is not None:
+        return lambda: ahora
+    return lambda: _ahora()  # se resuelve en cada llamada: los tests pueden sustituir _ahora
+
+
+def _renovar_si_dueno(con, trabajo, momento: datetime, lease_s: int) -> bool:
+    """Comprueba con una escritura que el trabajo sigue siendo nuestro (mismos intentos y
+    lease vigente) y renueva la lease. False si afecta cero filas."""
+    cur = con.execute(
+        f"UPDATE trabajos SET lease_hasta = ? WHERE {_ES_DUENO} AND lease_hasta >= ?",
+        (_txt(momento + timedelta(seconds=lease_s)), trabajo["id"], trabajo["intentos"],
+         _txt(momento)),
+    )
+    return cur.rowcount == 1
+
+
+def ejecutar_trabajo(con, trabajo, ahora, cfg: config.Config | None = None) -> str:
+    """Corre las etapas que faltan. Devuelve 'hecho', 'pendiente', 'fallido' o 'perdido'.
+
+    'ahora' es un instante fijo o un reloj; se consulta antes de cada etapa y al fallar.
+    """
     cfg = cfg or config.cargar_config()
+    reloj = _reloj(ahora)
     nombres = [e.nombre for e in ETAPAS]
     # Etapa desconocida (p. ej. renombrada): se repiten todas, son idempotentes.
     inicio = nombres.index(trabajo["etapa"]) + 1 if trabajo["etapa"] in nombres else 0
     for etapa in ETAPAS[inicio:]:
+        if not _renovar_si_dueno(con, trabajo, reloj(), cfg.trabajo_lease_s):
+            log.warning("trabajo=%s ya no es nuestro (lease vencida o reclamado); "
+                        "no se ejecuta la etapa %s", trabajo["id"], etapa.nombre)
+            return "perdido"
         try:
             etapa.ejecutar(con, trabajo, cfg)
         except Exception as e:
@@ -164,32 +194,39 @@ def ejecutar_trabajo(con, trabajo, ahora: datetime, cfg: config.Config | None = 
             tipo = type(e).__name__  # solo el tipo: el mensaje puede llevar datos del lead
             log.error("trabajo=%s etapa=%s intento=%s error=%s",
                       trabajo["id"], etapa.nombre, trabajo["intentos"], tipo)
-            return _registrar_fallo(con, trabajo, tipo, ahora)
-        con.execute(f"UPDATE trabajos SET etapa = ? WHERE {_ES_DUENO}",
-                    (etapa.nombre, trabajo["id"], trabajo["intentos"]))
+            # La espera se cuenta desde el fallo, no desde el reclamo.
+            return _registrar_fallo(con, trabajo, tipo, reloj())
+        cur = con.execute(f"UPDATE trabajos SET etapa = ? WHERE {_ES_DUENO}",
+                          (etapa.nombre, trabajo["id"], trabajo["intentos"]))
+        if cur.rowcount != 1:
+            log.warning("trabajo=%s ya no es nuestro tras la etapa %s; se interrumpe",
+                        trabajo["id"], etapa.nombre)
+            return "perdido"
     cur = con.execute(f"UPDATE trabajos SET estado = 'hecho', lease_hasta = NULL WHERE {_ES_DUENO}",
                       (trabajo["id"], trabajo["intentos"]))
     return "hecho" if cur.rowcount == 1 else "perdido"
 
 
-def procesar_pendientes(db_path: Path, ahora: datetime | None = None,
+def procesar_pendientes(db_path: Path, ahora=None,
                         cfg: config.Config | None = None,
                         parar: threading.Event | None = None) -> int:
     """Procesa trabajos hasta que no quede ninguno reclamable. Devuelve cuántos ejecutó.
 
-    Con "ahora" fijo, un trabajo reprogramado para más tarde no se vuelve a tomar.
+    'ahora': instante fijo, reloj (callable) o None (reloj real). Con un instante fijo, un
+    trabajo reprogramado para más tarde no se vuelve a tomar.
     """
     cfg = cfg or config.cargar_config()
+    reloj = _reloj(ahora)
     con = db.conectar(db_path)
     try:
         ejecutados = 0
         while parar is None or not parar.is_set():
-            momento = ahora or _ahora()
+            momento = reloj()
             recuperar_expirados(con, momento)
             trabajo = reclamar_trabajo(con, momento, cfg.trabajo_lease_s)
             if trabajo is None:
                 break
-            ejecutar_trabajo(con, trabajo, momento, cfg)
+            ejecutar_trabajo(con, trabajo, reloj, cfg)
             ejecutados += 1
         return ejecutados
     finally:
@@ -213,18 +250,23 @@ class Trabajador:
     def vivo(self) -> bool:
         return self._hilo is not None and self._hilo.is_alive()
 
-    def detener(self, timeout: float = 30) -> None:
+    def detener(self, timeout: float = 30) -> bool:
+        """Pide parar y espera hasta 'timeout' s. True si el hilo terminó."""
         self._parar.set()
         if self._hilo is not None:
             self._hilo.join(timeout)
+            if self._hilo.is_alive():
+                # Un trabajo a medias queda 'en_curso' y se recupera cuando vence su lease.
+                log.warning("trabajador no terminó a tiempo; se recuperará por lease")
+                return False
         log.info("trabajador detenido")
+        return True
 
     def _bucle(self) -> None:
         while not self._parar.is_set():
-            try:
-                ejecutados = procesar_pendientes(self.db_path, cfg=self.cfg, parar=self._parar)
-            except Exception as e:  # el hilo nunca muere por un error inesperado
+            try:  # la espera también va dentro: ningún error mata el hilo
+                if procesar_pendientes(self.db_path, cfg=self.cfg, parar=self._parar) == 0:
+                    self._parar.wait(self.cfg.worker_intervalo_s)
+            except Exception as e:
                 log.error("error en el bucle del trabajador: %s", type(e).__name__)
-                ejecutados = 0
-            if ejecutados == 0:
-                self._parar.wait(self.cfg.worker_intervalo_s)
+                self._parar.wait(ESPERA_TRAS_ERROR_S)

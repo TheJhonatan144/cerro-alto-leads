@@ -12,11 +12,18 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH_POR_DEFECTO = "data/leads.db"
 DUPLICADO_VENTANA_DIAS_POR_DEFECTO = 7
-WORKER_INTERVALO_S_POR_DEFECTO = 1
+WORKER_INTERVALO_S_POR_DEFECTO = 1.0
 TRABAJO_LEASE_S_POR_DEFECTO = 60
 TRABAJO_MAX_INTENTOS_POR_DEFECTO = 5
 
+# Rangos admitidos (mínimo, máximo), ambos incluidos.
+RANGO_DUPLICADO_VENTANA_DIAS = (1, 90)
+RANGO_WORKER_INTERVALO_S = (0.1, 60.0)
+RANGO_TRABAJO_LEASE_S = (10, 3600)
+RANGO_TRABAJO_MAX_INTENTOS = (1, 20)
+
 _ENTERO = re.compile(r"[+-]?[0-9]+")
+_DECIMAL = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)")  # sin exponentes, inf ni nan
 
 
 class ConfigError(ValueError):
@@ -28,7 +35,7 @@ class Config:
     db_path: Path
     duplicado_ventana_dias: int
     worker_activo: bool
-    worker_intervalo_s: int
+    worker_intervalo_s: float
     trabajo_lease_s: int
     trabajo_max_intentos: int
 
@@ -37,17 +44,30 @@ def _valor(entorno, nombre: str) -> str:
     return (entorno.get(nombre) or "").strip()
 
 
-def _entero_positivo(entorno, nombre: str, defecto: int) -> int:
+def _en_rango(nombre: str, numero, rango):
+    minimo, maximo = rango
+    if not minimo <= numero <= maximo:
+        raise ConfigError(f"{nombre} debe estar entre {minimo} y {maximo}")
+    return numero
+
+
+def _entero(entorno, nombre: str, defecto: int, rango: tuple[int, int]) -> int:
     valor = _valor(entorno, nombre)
     if not valor:
         return defecto
     # El mensaje nombra la variable pero no repite su valor.
     if not _ENTERO.fullmatch(valor):
         raise ConfigError(f"{nombre} debe ser un número entero")
-    numero = int(valor)
-    if numero <= 0:
-        raise ConfigError(f"{nombre} debe ser un entero mayor que 0")
-    return numero
+    return _en_rango(nombre, int(valor), rango)
+
+
+def _decimal(entorno, nombre: str, defecto: float, rango: tuple[float, float]) -> float:
+    valor = _valor(entorno, nombre)
+    if not valor:
+        return defecto
+    if not _DECIMAL.fullmatch(valor):
+        raise ConfigError(f"{nombre} debe ser un número (se admiten decimales con punto)")
+    return _en_rango(nombre, float(valor), rango)
 
 
 def db_path(entorno=None) -> Path:
@@ -60,7 +80,8 @@ def db_path(entorno=None) -> Path:
 
 def duplicado_ventana_dias(entorno=None) -> int:
     entorno = os.environ if entorno is None else entorno
-    return _entero_positivo(entorno, "DUPLICADO_VENTANA_DIAS", DUPLICADO_VENTANA_DIAS_POR_DEFECTO)
+    return _entero(entorno, "DUPLICADO_VENTANA_DIAS", DUPLICADO_VENTANA_DIAS_POR_DEFECTO,
+                   RANGO_DUPLICADO_VENTANA_DIAS)
 
 
 def worker_activo(entorno=None) -> bool:
@@ -77,11 +98,12 @@ def cargar_config(entorno=None) -> Config:
         db_path=db_path(entorno),
         duplicado_ventana_dias=duplicado_ventana_dias(entorno),
         worker_activo=worker_activo(entorno),
-        worker_intervalo_s=_entero_positivo(
-            entorno, "WORKER_INTERVALO_S", WORKER_INTERVALO_S_POR_DEFECTO),
-        trabajo_lease_s=_entero_positivo(entorno, "TRABAJO_LEASE_S", TRABAJO_LEASE_S_POR_DEFECTO),
-        trabajo_max_intentos=_entero_positivo(
-            entorno, "TRABAJO_MAX_INTENTOS", TRABAJO_MAX_INTENTOS_POR_DEFECTO),
+        worker_intervalo_s=_decimal(entorno, "WORKER_INTERVALO_S",
+                                    WORKER_INTERVALO_S_POR_DEFECTO, RANGO_WORKER_INTERVALO_S),
+        trabajo_lease_s=_entero(entorno, "TRABAJO_LEASE_S", TRABAJO_LEASE_S_POR_DEFECTO,
+                                RANGO_TRABAJO_LEASE_S),
+        trabajo_max_intentos=_entero(entorno, "TRABAJO_MAX_INTENTOS",
+                                     TRABAJO_MAX_INTENTOS_POR_DEFECTO, RANGO_TRABAJO_MAX_INTENTOS),
     )
 
 

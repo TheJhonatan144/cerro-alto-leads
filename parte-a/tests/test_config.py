@@ -110,3 +110,29 @@ def test_lector_env_busca_primero_aqui_y_luego_arriba(tmp_path, monkeypatch):
 
 def test_sin_env_no_falla(tmp_path):
     assert config.cargar_env([tmp_path / "no-existe"], {}) is None
+
+
+# --- Bloque 2b.1: rangos -----------------------------------------------------------
+
+@pytest.mark.parametrize("nombre, valor", [
+    ("WORKER_INTERVALO_S", "100000000000000000000"),
+    ("WORKER_INTERVALO_S", "3600"),
+    ("WORKER_INTERVALO_S", "0.01"),
+    ("WORKER_INTERVALO_S", "inf"),
+    ("WORKER_INTERVALO_S", "nan"),
+    ("TRABAJO_LEASE_S", "5"),
+    ("TRABAJO_LEASE_S", "100000"),
+    ("TRABAJO_MAX_INTENTOS", "1000"),
+    ("DUPLICADO_VENTANA_DIAS", "100000"),
+])
+def test_2b1_fuera_de_rango_hace_fallar_el_arranque(tmp_path, monkeypatch, nombre, valor):
+    monkeypatch.setenv(nombre, valor)
+    with pytest.raises(config.ConfigError, match=nombre):
+        create_app(tmp_path / "leads.db")
+
+
+def test_2b1_limites_aceptados():
+    cfg = config.cargar_config({"WORKER_INTERVALO_S": "0.5", "TRABAJO_LEASE_S": "10",
+                                "TRABAJO_MAX_INTENTOS": "20", "DUPLICADO_VENTANA_DIAS": "90"})
+    assert (cfg.worker_intervalo_s, cfg.trabajo_lease_s, cfg.trabajo_max_intentos,
+            cfg.duplicado_ventana_dias) == (0.5, 10, 20, 90)

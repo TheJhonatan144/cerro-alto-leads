@@ -12,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from app import config, db
+from app.normalizar import normalizar_event_id
 from app.trabajador import Trabajador
 
 log = logging.getLogger("leads")
@@ -42,17 +43,6 @@ def _texto_seguro(s: str) -> str:
 
 def _texto_no_vacio(valor) -> str | None:
     return _texto_seguro(valor) if isinstance(valor, str) and valor.strip() else None
-
-
-def normalizar_event_id(valor) -> str | None:
-    """Texto recortado o entero (no booleano) como texto; cualquier otro tipo o vacío -> None."""
-    if isinstance(valor, bool):
-        return None
-    if isinstance(valor, int):
-        return str(valor)
-    if isinstance(valor, str):
-        return _texto_seguro(valor.strip()) or None
-    return None
 
 
 def parsear_desde(valor: str) -> str:

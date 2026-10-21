@@ -10,6 +10,7 @@ TIPO_SOPORTADO = "lead.created"
 MOTIVO_NO_INTERPRETABLE = "No se pudo interpretar el evento"
 MOTIVO_TIPO = "Tipo de evento no soportado"
 MOTIVO_SIN_LEAD = "El evento no trae datos del lead"
+MOTIVO_REENVIO = "Reenvío de un evento ya recibido (mismo event_id)"
 
 
 def procesar_evento(con, evento_id: int, ventana_dias: int | None = None) -> dict | None:
@@ -23,7 +24,8 @@ def procesar_evento(con, evento_id: int, ventana_dias: int | None = None) -> dic
     try:
         ev = con.execute("SELECT * FROM eventos WHERE id = ?", (evento_id,)).fetchone()
         if ev is not None and ev["estado"] == "pendiente" and ev["lead_id"] is None:
-            _procesar(con, ev, ventana)
+            if ev["event_id"] is not None or not _reextraer_event_id(con, ev):
+                _procesar(con, ev, ventana)
             ev = con.execute("SELECT * FROM eventos WHERE id = ?", (evento_id,)).fetchone()
         con.execute("COMMIT")
     except BaseException:
@@ -31,6 +33,39 @@ def procesar_evento(con, evento_id: int, ventana_dias: int | None = None) -> dic
             con.execute("ROLLBACK")
         raise
     return db.campos_estado(ev) if ev is not None else None
+
+
+def _reextraer_event_id(con, ev) -> bool:
+    """Evento guardado sin event_id: vuelve a extraerlo del cuerpo crudo.
+
+    Si el webhook falló al extraerlo, aquí se recupera y se asigna. Si choca con el UNIQUE,
+    es un reenvío: queda 'duplicado' y devuelve True. Una excepción inesperada sube y cuenta
+    como error de la etapa (reintentos), nunca como rechazo. Sin event_id en el cuerpo, o
+    con un cuerpo que no es un objeto, devuelve False y sigue el procesamiento normal.
+    """
+    try:
+        datos = json.loads(ev["cuerpo_crudo"])
+    except (ValueError, RecursionError):
+        return False  # _procesar lo rechazará
+    if not isinstance(datos, dict):
+        return False
+    event_id = n.normalizar_event_id(datos.get("event_id"))
+    if event_id is None:
+        return False  # el cuerpo realmente no trae event_id (D3)
+    # Como en la recepción: decide la restricción UNIQUE, no un SELECT previo.
+    cur = con.execute(
+        "UPDATE OR IGNORE eventos SET event_id = ? WHERE id = ? AND event_id IS NULL",
+        (event_id, ev["id"]),
+    )
+    if cur.rowcount == 1:
+        return False
+    original = con.execute("SELECT lead_id FROM eventos WHERE event_id = ?", (event_id,)).fetchone()
+    con.execute(
+        """UPDATE eventos SET estado = 'duplicado', duplicado_de = ?, lead_id = ?, motivo = ?
+           WHERE id = ?""",
+        (event_id, original["lead_id"], MOTIVO_REENVIO, ev["id"]),
+    )
+    return True
 
 
 def _rechazar(con, ev, motivo: str) -> None:

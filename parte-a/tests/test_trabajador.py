@@ -1,5 +1,6 @@
 """Bloque 2b: cola de trabajos, lease, reintentos, etapas e hilo trabajador."""
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -372,3 +373,218 @@ def test_diez_payloads_con_el_trabajador_real(ruta_db, monkeypatch):
         assert con.execute("SELECT COUNT(*) FROM lead_mensajes").fetchone()[0] == 1
     finally:
         con.close()
+
+
+# --- Bloque 2b.1 -------------------------------------------------------------------
+
+from app import config  # noqa: E402
+from app import main as app_main  # noqa: E402
+from app import normalizar  # noqa: E402
+
+PAYLOAD_01 = (PAYLOADS / "evento_01.json").read_bytes()
+PAYLOAD_02 = (PAYLOADS / "evento_02.json").read_bytes()
+EVT_01 = "evt_01JB7Q3M2X4K8R9T5W6Y"
+
+
+def _explota(*_a, **_k):
+    raise RuntimeError("Carla Mendoza 0991234567")
+
+
+def recibir_con_extraccion_rota(cliente, cuerpo) -> int:
+    """El webhook falla al extraer el event_id y guarda el evento con event_id NULL."""
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(app_main, "normalizar_event_id", _explota)
+        i = recibir(cliente, cuerpo)
+    with sqlite3.connect(cliente.app.state.db_path) as c:
+        assert c.execute("SELECT event_id FROM eventos WHERE id = ?", (i,)).fetchone()[0] is None
+    return i
+
+
+class Reloj:
+    """Reloj falso que las etapas pueden adelantar para simular que tardan."""
+    def __init__(self, inicio: datetime):
+        self.t = inicio
+
+    def __call__(self) -> datetime:
+        return self.t
+
+    def avanzar(self, segundos: float) -> None:
+        self.t += timedelta(seconds=segundos)
+
+
+# 1) Re-extracción del event_id en el trabajador
+
+def test_2b1_reextrae_event_id_perdido_en_el_webhook(cliente, con, ruta_db):
+    i = recibir_con_extraccion_rota(cliente, PAYLOAD_01)
+    procesar_pendientes(ruta_db, ahora_tras_recibir())
+    assert evento(con, i)["event_id"] == EVT_01
+    assert evento(con, i)["lead_id"] is not None
+    r = cliente.get("/leads/estado", params={"event_id": EVT_01})
+    assert r.status_code == 200
+
+
+def test_2b1_reextraccion_que_choca_es_reenvio(cliente, con, ruta_db):
+    i1 = recibir_con_extraccion_rota(cliente, PAYLOAD_01)
+    i2 = recibir(cliente, PAYLOAD_02)  # el conector reenvía: esta vez sí se extrae
+    procesar_pendientes(ruta_db, ahora_tras_recibir())
+    e1 = evento(con, i1)
+    assert e1["event_id"] is None  # el UNIQUE lo tiene i2
+    assert e1["estado"] == "duplicado"
+    assert e1["duplicado_de"] == EVT_01
+    assert "reenvío" in e1["motivo"].lower()
+    assert "carla" not in e1["motivo"].lower() and "099" not in e1["motivo"]
+    assert evento(con, i2)["estado"] == "pendiente" and evento(con, i2)["lead_id"] is not None
+    assert con.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 1
+
+
+def test_2b1_reextraccion_con_error_inesperado_reintenta_y_no_rechaza(cliente, con, ruta_db, monkeypatch):
+    i = recibir_con_extraccion_rota(cliente, PAYLOAD_01)
+    con.execute("UPDATE trabajos SET max_intentos = 2 WHERE evento_id = ?", (i,))
+    monkeypatch.setattr(normalizar, "normalizar_event_id", _explota, raising=False)
+    t0 = ahora_tras_recibir()
+    procesar_pendientes(ruta_db, t0)
+    t = trabajo_de(con, i)
+    assert t["estado"] == "pendiente" and t["intentos"] == 1 and t["ultimo_error"] == "RuntimeError"
+    assert evento(con, i)["estado"] == "pendiente"
+    procesar_pendientes(ruta_db, t0 + timedelta(seconds=30))
+    e = evento(con, i)
+    assert trabajo_de(con, i)["estado"] == "fallido"
+    assert e["estado"] == "fallido"
+    assert e["motivo"] == "Procesamiento fallido tras 2 intentos (RuntimeError)"
+    assert e["cuerpo_crudo"] == PAYLOAD_01  # se conserva para reprocesar
+
+
+def test_2b1_cuerpo_sin_event_id_sigue_como_d3(cliente, con, ruta_db):
+    i = recibir(cliente, json.dumps({"event_type": "lead.created", "lead": {
+        "full_name": "Ana", "phone": "0991112233"}}).encode())
+    procesar_pendientes(ruta_db, ahora_tras_recibir())
+    assert evento(con, i)["event_id"] is None
+    assert evento(con, i)["estado"] == "pendiente" and evento(con, i)["lead_id"] is not None
+
+
+# 2) Comprobación de dueño antes de cada etapa
+
+@pytest.fixture
+def efectos(monkeypatch):
+    registro = []
+    monkeypatch.setattr(trabajador, "ETAPAS", [
+        trabajador.Etapa("a", lambda *_: registro.append("a")),
+        trabajador.Etapa("b", lambda *_: registro.append("b")),
+    ])
+    return registro
+
+
+def test_2b1_no_ejecuta_etapas_si_otro_reclamo_el_trabajo(cliente, con, efectos):
+    recibir(cliente)
+    t0 = ahora_tras_recibir()
+    viejo = reclamar_trabajo(con, t0, lease_s=60)
+    recuperar_expirados(con, t0 + timedelta(seconds=61))
+    reclamar_trabajo(con, t0 + timedelta(seconds=61))
+    assert ejecutar_trabajo(con, viejo, t0 + timedelta(seconds=62)) == "perdido"
+    assert efectos == []
+
+
+def test_2b1_no_ejecuta_etapas_con_lease_vencida(cliente, con, efectos):
+    recibir(cliente)
+    t0 = ahora_tras_recibir()
+    t = reclamar_trabajo(con, t0, lease_s=60)
+    assert ejecutar_trabajo(con, t, t0 + timedelta(seconds=61)) == "perdido"
+    assert efectos == []
+
+
+def test_2b1_lease_vencida_durante_una_etapa_corta_el_recorrido(cliente, con, ruta_db, monkeypatch):
+    registro = []
+    t0 = ahora_tras_recibir()
+    reloj = Reloj(t0)
+
+    def a_lenta(_c, trabajo, _cfg):
+        registro.append(("a", trabajo["intentos"]))
+        reloj.avanzar(61)  # tarda más que la lease
+
+    monkeypatch.setattr(trabajador, "ETAPAS", [
+        trabajador.Etapa("a", a_lenta),
+        trabajador.Etapa("b", lambda _c, trabajo, _cfg: registro.append(("b", trabajo["intentos"]))),
+    ])
+    monkeypatch.setattr(trabajador, "_ahora", reloj)
+    recibir(cliente)
+    con.execute("UPDATE trabajos SET proximo_intento_at = ?", (t0.strftime(db.FORMATO_UTC),))
+    procesar_pendientes(ruta_db)
+    # "b" no corre con la lease vencida del intento 1: el trabajo se recupera por lease y
+    # "b" corre en el intento 2, sin repetir "a".
+    assert registro == [("a", 1), ("b", 2)]
+
+
+def test_2b1_guardar_etapa_sin_filas_interrumpe(cliente, con, monkeypatch):
+    registro = []
+
+    def a_y_pierde(c, trabajo, _cfg):
+        registro.append("a")
+        c.execute("UPDATE trabajos SET intentos = intentos + 1 WHERE id = ?", (trabajo["id"],))
+
+    monkeypatch.setattr(trabajador, "ETAPAS", [
+        trabajador.Etapa("a", a_y_pierde),
+        trabajador.Etapa("b", lambda *_: registro.append("b")),
+    ])
+    recibir(cliente)
+    t0 = ahora_tras_recibir()
+    t = reclamar_trabajo(con, t0)
+    assert ejecutar_trabajo(con, t, t0) == "perdido"
+    assert registro == ["a"]
+
+
+# 3) Un error en la espera del bucle no mata el hilo
+
+def test_2b1_error_en_la_espera_no_mata_el_hilo(ruta_db):
+    db.inicializar(ruta_db)
+    cfg = config.Config(db_path=ruta_db, duplicado_ventana_dias=7, worker_activo=True,
+                        worker_intervalo_s=10 ** 20, trabajo_lease_s=60, trabajo_max_intentos=5)
+    h = trabajador.Trabajador(ruta_db, cfg)
+    h.iniciar()
+    try:
+        time.sleep(0.3)
+        assert h.vivo()
+    finally:
+        h.detener(timeout=5)
+
+
+# 4) Cierre con plazo
+
+def test_2b1_cierre_sin_terminar_a_tiempo_avisa(ruta_db, cliente, monkeypatch, caplog):
+    dentro, soltar = threading.Event(), threading.Event()
+
+    def bloqueada(*_):
+        dentro.set()
+        soltar.wait(10)
+
+    monkeypatch.setattr(trabajador, "ETAPAS", [trabajador.Etapa("bloqueada", bloqueada)])
+    recibir(cliente)
+    h = trabajador.Trabajador(ruta_db, config.cargar_config())
+    h.iniciar()
+    try:
+        assert dentro.wait(5)
+        caplog.clear()
+        caplog.set_level(logging.INFO, logger="leads.trabajador")
+        h.detener(timeout=0.2)
+        assert h.vivo()
+        assert "trabajador no terminó a tiempo; se recuperará por lease" in caplog.text
+        assert "trabajador detenido" not in caplog.text
+    finally:
+        soltar.set()
+        h._hilo.join(5)
+
+
+# 5) El reintento se programa desde la hora del fallo
+
+def test_2b1_reintento_desde_la_hora_del_fallo(cliente, con, ruta_db, monkeypatch):
+    t0 = ahora_tras_recibir()
+    reloj = Reloj(t0)
+
+    def lenta_y_falla(*_):
+        reloj.avanzar(40)  # tarda más que la primera espera (30 s)
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(trabajador, "ETAPAS", [trabajador.Etapa("lenta", lenta_y_falla)])
+    monkeypatch.setattr(trabajador, "_ahora", reloj)
+    i = recibir(cliente)
+    procesar_pendientes(ruta_db)
+    assert leer_utc(trabajo_de(con, i)["proximo_intento_at"]) == t0 + timedelta(seconds=40 + 30)

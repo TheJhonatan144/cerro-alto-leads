@@ -27,6 +27,20 @@ def texto_seguro(s: str) -> str:
     return s.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
+def normalizar_event_id(valor) -> str | None:
+    """Texto recortado o entero (no booleano) como texto; cualquier otro tipo o vacío -> None.
+
+    La usan el webhook y, si allí falló, el trabajador al volver a extraerlo.
+    """
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, int):
+        return str(valor)
+    if isinstance(valor, str):
+        return texto_seguro(valor.strip()) or None
+    return None
+
+
 def normalizar_telefono(valor) -> str | None:
     """E.164 o None. Región por defecto EC; 12 dígitos que empiezan con 593 = prefijo sin '+'."""
     if isinstance(valor, bool):
