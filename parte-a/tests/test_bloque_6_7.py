@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from app import canales, despachador
+from app import canales, db, despachador, errores
 from app.canales import CanalArchivo, ErrorCanal
 from app.despachador import despachar_pendientes
 from app.plantillas import aviso_caliente, limpiar_campo, seguimiento_tibio
@@ -100,6 +100,37 @@ def test_vencido_atomico_y_una_sola_vez(cliente, con, ruta_db, disparador):
     assert avisos(con, i)[0]["vencido_notificado"] == 1
     inc = _vencidas(con)
     assert len(inc) == 1 and inc[0]["ocurrencias"] == 1 and f"evento={i}" in inc[0]["detalle"]
+
+
+def test_vencido_sin_destino_de_incidencias_no_marca(cliente, con, ruta_db):
+    """6.8: sin destino configurado no se marca vencido_notificado sin incidencia."""
+    i, _ = _un_caliente(cliente, ruta_db, con)
+    recibido = leer(evento(con, i)["received_at"])
+    errores.desconfigurar()
+    despachar_pendientes(ruta_db, FallaSiempre(), recibido + timedelta(seconds=400))  # no lanza
+    assert avisos(con, i)[0]["vencido_notificado"] == 0 and _vencidas(con) == []
+
+    errores.configurar(ruta_db, 900)
+    for segundos in (500, 600):
+        _reabrir(con, i, recibido)
+        despachar_pendientes(ruta_db, FallaSiempre(), recibido + timedelta(seconds=segundos))
+    assert avisos(con, i)[0]["vencido_notificado"] == 1
+    inc = _vencidas(con)
+    assert len(inc) == 1 and inc[0]["ocurrencias"] == 1
+
+
+def test_registrar_en_transaccion_exige_destino(ruta_db, cliente):
+    errores.desconfigurar()
+    c = db.conectar(ruta_db)
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        with pytest.raises(errores.SinDestinoIncidencias):
+            errores.registrar_en_transaccion(c, "avisos", "aviso_vencido", exigir_persistencia=True)
+        c.execute("ROLLBACK")
+        # Sin exigir, el comportamiento anterior: solo la función de log.
+        assert callable(errores.registrar_en_transaccion(c, "avisos", "aviso_vencido"))
+    finally:
+        c.close()
 
 
 # --- 6) Alcance de la negación en urgencias ---------------------------------------------------------

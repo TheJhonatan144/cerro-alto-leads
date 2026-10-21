@@ -1012,6 +1012,16 @@ Leyenda: ✅ construido y probado · 🟢 construido · 🟡 parcial · ⛔ fuer
   el máximo de intentos. Motivo: el intento se cuenta al reclamar; la lease se recupera y el
   aviso se vuelve a reclamar aunque ya pase del máximo (el contador no distingue esas caídas
   de un fallo del canal).
+- **[9]** Si una escritura al archivo de avisos falla después de haber escrito solo una parte,
+  ese fragmento puede quedar sin salto de línea y la línea siguiente se concatena a él. Motivo:
+  con notificadores (p. ej. `AVISOS_CANAL=n8n,archivo`, la configuración del README con n8n) el
+  archivo es auditoría y no cuenta como entrega. Con el valor por defecto (solo `archivo`) sí es
+  la entrega, pero el fallo es `ErrorCanal` temporal: el aviso queda pendiente y el reintento
+  escribe la línea completa (la línea rota se puede descartar al leer).
+- **[10]** Una interrupción del proceso (`KeyboardInterrupt`) en plena transacción de
+  vencimiento no ejecuta un `ROLLBACK` explícito (el manejador captura `Exception`). Motivo:
+  SQLite deshace la transacción abierta al cerrar la conexión, y el proceso está terminando; la
+  marca y la incidencia siguen sin quedar a medias.
 
 **Lo que no probó el asistente con servicios reales**
 - La API de pacientes, los proveedores de LLM (formato de petición y respuesta), Telegram y
@@ -1086,6 +1096,7 @@ fijan lo que no debía cambiar). El esquema de la base **no** cambió.
   despachador llama tras el `COMMIT` (un `ROLLBACK` no deja log de algo no registrado).
   `reportar_error` no cambió (su escritura comparte ahora `_insertar`).
 - **[D]** Sin registro en base configurado (tests, CLI), igual que `reportar_error`: solo log.
+  **Corregido en 6.8** para el vencimiento (ver abajo).
 
 ### 6. Alcance de la negación en urgencias (`reglas.py`)
 - **[R]** Cortan la negación, además de lo del Bloque 4.2: una coma, "y" o "e" seguidos de
@@ -1112,3 +1123,14 @@ fijan lo que no debía cambiar). El esquema de la base **no** cambió.
 
 
 Prueba real (21-oct, ejecutada por el autor): 1 petición de búsqueda, HTTP 200, forma de respuesta conforme a la documentación, 0 resultados. Tratamientos y LLM real no se probaron contra servicios reales; el resto del cliente se probó con dobles.
+### Revisión de ChatGPT sobre el delta del 6.7 (Bloque 6.8)
+- **Hallazgo 1, corregido [R]:** sin destino de incidencias configurado,
+  `registrar_en_transaccion` omitía el INSERT y el despachador hacía COMMIT: quedaba
+  `vencido_notificado = 1` sin incidencia. Ahora tiene el parámetro `exigir_persistencia`
+  (por defecto `False`). Con `True` y sin destino, lanza `SinDestinoIncidencias` antes de
+  escribir nada. `revisar_vencidos` lo llama con `True`: la excepción cae en su manejador, que
+  hace `ROLLBACK`, y el aviso se revisa otra vez en la siguiente vuelta. `reportar_error` y los
+  demás llamadores no cambian. Tests nuevos: 2 en `tests/test_bloque_6_7.py`; ningún test
+  existente dependía de `revisar_vencidos` sin destino.
+- **Hallazgos 2 y 3, documentados:** limitaciones [9] (escritura parcial del archivo) y [10]
+  (`KeyboardInterrupt` en la transacción de vencimiento), en "Limitaciones conocidas".

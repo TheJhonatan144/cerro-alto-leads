@@ -127,18 +127,26 @@ def _anotar(nivel: int, origen_ok: str, codigo_ok: str, evento_id) -> None:
             "error de integración origen=%s codigo=%s evento=%s", origen_ok, codigo_ok, _entero(evento_id))
 
 
+class SinDestinoIncidencias(Exception):
+    """Se exigió persistir la incidencia pero el registro en base no está configurado."""
+
+
 def registrar_en_transaccion(con, origen: str, codigo: str, *, evento_id=None,
-                             clave: str | None = None, datos: dict | None = None):
+                             clave: str | None = None, datos: dict | None = None,
+                             exigir_persistencia: bool = False):
     """Interna (despachador): como reportar_error, pero escribe la incidencia en la
     transacción ya abierta de 'con', para que quede junto a otra escritura o no quede.
     A diferencia de reportar_error, SÍ lanza si falla (el llamador hace ROLLBACK).
 
     Devuelve una función que deja la línea de log; el llamador la invoca tras el COMMIT,
     así un ROLLBACK no deja una línea de algo que no quedó registrado. Sin registro en base
-    configurado (tests, CLI) solo se escribe esa línea, como en reportar_error."""
+    configurado (tests, CLI) solo se escribe esa línea, como en reportar_error, salvo con
+    exigir_persistencia=True: entonces lanza SinDestinoIncidencias sin escribir nada."""
     origen_ok, codigo_ok, clave_ok, detalle = _normalizar(origen, codigo, clave, evento_id, datos)
     with _cerrojo:
         ruta, ventana_s = _destino["ruta"], _destino["ventana_s"]
+    if ruta is None and exigir_persistencia:
+        raise SinDestinoIncidencias("registro de incidencias no configurado")
     if ruta is not None:
         _insertar(con, ventana_s, codigo_ok, clave_ok, detalle)
     return lambda nivel=logging.WARNING: _anotar(nivel, origen_ok, codigo_ok, evento_id)

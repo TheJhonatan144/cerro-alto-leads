@@ -150,7 +150,9 @@ def revisar_vencidos(con, ahora: datetime) -> int:
             cur = con.execute("UPDATE avisos SET vencido_notificado = 1 WHERE id = ? AND vencido_notificado = 0",
                               (f["id"],))
             if cur.rowcount == 1:
-                anotar = errores.registrar_en_transaccion(con, "avisos", "aviso_vencido", evento_id=f["evento_id"])
+                # Sin destino de incidencias no se marca: la marca sin incidencia perdería el aviso.
+                anotar = errores.registrar_en_transaccion(con, "avisos", "aviso_vencido", evento_id=f["evento_id"],
+                                                          exigir_persistencia=True)
             con.execute("COMMIT")
         except Exception as e:  # solo el tipo; se reintenta en la siguiente vuelta
             if con.in_transaction:
