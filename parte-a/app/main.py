@@ -1,8 +1,9 @@
-"""API de recepción de leads (Bloque 1: recepción, persistencia e idempotencia)."""
+"""API de recepción de leads: webhook idempotente, consulta de estado y trabajador."""
 import json
 import logging
 import re
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from app import config, db
+from app.trabajador import Trabajador
 
 log = logging.getLogger("leads")
 
@@ -19,7 +21,6 @@ _OFFSET_CON_ESPACIO = re.compile(r"T.* (\d{2}(:?\d{2})?)$")
 
 MOTIVO_NO_JSON = "El cuerpo no es JSON válido"
 MOTIVO_NO_OBJETO = "El JSON recibido no es un objeto"
-MOTIVO_NO_INTERPRETABLE = "No se pudo interpretar el evento"
 
 
 def analizar_cuerpo(cuerpo: bytes) -> tuple[dict | None, str | None]:
@@ -76,13 +77,31 @@ def _sin_persistencia(e: Exception) -> JSONResponse:
 
 
 def create_app(db_path: str | Path | None = None) -> FastAPI:
-    """Fábrica de la app. Servidor: uvicorn app.main:create_app --factory"""
+    """Fábrica de la app. Servidor: uvicorn app.main:create_app --factory
+
+    Carga .env y valida toda la configuración aquí: un valor inválido impide arrancar.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    ruta = Path(db_path) if db_path else config.db_path()
+    config.cargar_env()
+    cfg = config.cargar_config()
+    ruta = Path(db_path) if db_path else cfg.db_path
     db.inicializar(ruta)
 
-    app = FastAPI(title="Leads Clínica Dental Cerro Alto")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        trabajador = Trabajador(ruta, cfg) if cfg.worker_activo else None
+        app.state.trabajador = trabajador
+        if trabajador:
+            trabajador.iniciar()
+        try:
+            yield
+        finally:
+            if trabajador:
+                await run_in_threadpool(trabajador.detener)
+
+    app = FastAPI(title="Leads Clínica Dental Cerro Alto", lifespan=lifespan)
     app.state.db_path = ruta
+    app.state.config = cfg
 
     def _recibir(cuerpo: bytes) -> db.Recepcion:
         con = db.conectar(ruta)
@@ -96,20 +115,23 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                     created_at_origen=_texto_no_vacio(datos.get("created_at")) if datos else None,
                     estado="rechazado" if motivo else "pendiente",
                     motivo=motivo,
+                    max_intentos=cfg.trabajo_max_intentos,
                 )
             except sqlite3.Error:
                 raise
             except Exception as e:
-                # Fallo al interpretar: se guarda el cuerpo crudo igualmente. Si este
-                # guardado también falla, la excepción sube y la ruta responde 503.
+                # Fallo al interpretar: se guarda el cuerpo crudo como 'pendiente' con su
+                # trabajo, y el procesador lo reintenta por su cuenta. Si este guardado
+                # también falla, la excepción sube y la ruta responde 503.
                 log.error("no se pudo interpretar el evento: %s", type(e).__name__)
                 return db.registrar_recepcion(
                     con,
                     cuerpo=cuerpo,
                     event_id=None,
                     created_at_origen=None,
-                    estado="rechazado",
-                    motivo=MOTIVO_NO_INTERPRETABLE,
+                    estado="pendiente",
+                    motivo=None,
+                    max_intentos=cfg.trabajo_max_intentos,
                 )
         finally:
             con.close()

@@ -47,9 +47,13 @@ CREATE TABLE IF NOT EXISTS trabajos (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     evento_id          INTEGER NOT NULL REFERENCES eventos(id),
     tipo               TEXT NOT NULL DEFAULT 'procesar_evento' CHECK (tipo IN ('procesar_evento')),
-    estado             TEXT NOT NULL DEFAULT 'pendiente',
+    estado             TEXT NOT NULL DEFAULT 'pendiente'
+        CHECK (estado IN ('pendiente', 'en_curso', 'hecho', 'fallido')),
+    etapa              TEXT NOT NULL DEFAULT 'pendiente',  -- última etapa completada
     intentos           INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0),
+    max_intentos       INTEGER NOT NULL DEFAULT 5 CHECK (max_intentos >= 1),
     proximo_intento_at TEXT,
+    lease_hasta        TEXT,
     ultimo_error       TEXT,
     UNIQUE (evento_id, tipo)
 );
@@ -150,6 +154,7 @@ def registrar_recepcion(
     created_at_origen: str | None,
     estado: str,
     motivo: str | None,
+    max_intentos: int = 5,
 ) -> Recepcion:
     """Guarda el evento y su trabajo en una sola transacción.
 
@@ -173,8 +178,9 @@ def registrar_recepcion(
         if cur.rowcount == 1:
             if estado == "pendiente":
                 con.execute(
-                    "INSERT INTO trabajos (evento_id, proximo_intento_at) VALUES (?, ?)",
-                    (cur.lastrowid, received_at),
+                    """INSERT INTO trabajos (evento_id, proximo_intento_at, max_intentos)
+                       VALUES (?, ?, ?)""",
+                    (cur.lastrowid, received_at, max_intentos),
                 )
             fila = con.execute("SELECT * FROM eventos WHERE id = ?", (cur.lastrowid,)).fetchone()
             nuevo = True

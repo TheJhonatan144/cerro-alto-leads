@@ -14,7 +14,7 @@ SERVICIOS = (
 PLATAFORMAS = ("instagram", "facebook")
 CAMPANAS = ("Sonrisa Blanca", "Ortodoncia sin Excusas", "Chequeo Anual")
 
-_SEPARADORES_TELEFONO = re.compile(r"[\s\-()]")
+_SEPARADORES_TELEFONO = re.compile(r"[\s\-().]")
 _TELEFONO_LIMPIO = re.compile(r"\+?[0-9]+")  # [0-9], no \d: \d admite dígitos de otros alfabetos
 _EMAIL_LOCAL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}")
 _EMAIL_ETIQUETA = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")  # 1-63, sin '-' en los bordes

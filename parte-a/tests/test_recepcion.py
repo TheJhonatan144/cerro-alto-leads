@@ -208,20 +208,24 @@ def test_created_at_con_sustituto_suelto(cliente, ruta_db):
     assert ev["estado"] == "pendiente"
 
 
-def test_excepcion_al_extraer_guarda_rechazado(cliente, ruta_db, monkeypatch):
+def test_excepcion_al_extraer_guarda_pendiente_con_trabajo(cliente, ruta_db, monkeypatch, caplog):
     def explota(_valor):
-        raise RuntimeError("fallo forzado")
+        raise RuntimeError("fallo forzado con dato carla.mendoza@example.com")
 
     monkeypatch.setattr(app_main, "normalizar_event_id", explota)
     r = cliente.post(URL, content=payload(1))
-    assert 200 <= r.status_code < 300
-    assert r.json()["estado"] == "rechazado"
+    assert r.status_code == 202
+    assert r.json()["estado"] == "pendiente"
     [ev] = filas(ruta_db, "SELECT * FROM eventos")
-    assert ev["estado"] == "rechazado"
+    assert ev["estado"] == "pendiente"
     assert ev["event_id"] is None
-    assert ev["motivo"] == "No se pudo interpretar el evento"
+    assert ev["motivo"] is None
     assert ev["cuerpo_crudo"] == payload(1)
-    assert contar(ruta_db, "trabajos") == 0
+    [t] = filas(ruta_db, "SELECT * FROM trabajos")
+    assert t["evento_id"] == ev["id"] and t["estado"] == "pendiente"
+    # Solo el tipo de error en el log, nunca el mensaje.
+    assert "RuntimeError" in caplog.text
+    assert "carla" not in caplog.text.lower()
 
 
 def test_si_tambien_falla_el_guardado_de_respaldo_da_503(cliente, ruta_db, monkeypatch):

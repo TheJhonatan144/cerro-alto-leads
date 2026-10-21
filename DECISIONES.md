@@ -10,7 +10,7 @@ Leyenda: **[R]** requisito confirmado · **[D]** decisión propia · **[S]** sup
 - **[D]** Una conexión por petición, transacción `BEGIN IMMEDIATE` (toma el bloqueo de escritura al inicio, así las escrituras concurrentes se serializan y esperan vía `busy_timeout` en vez de fallar a mitad).
 - **[D]** `received_at` se toma *dentro* de la transacción, así es monótono con el `id` (orden de llegada real = orden de commit). Formato fijo `YYYY-MM-DDTHH:MM:SS.ffffffZ`, validado con `CHECK ... GLOB`; por ser de ancho fijo, comparar texto equivale a comparar fechas.
 - **[D]** `cuerpo_crudo` es `BLOB`: guarda los bytes exactos, incluso si no son UTF-8 válido. `hash_cuerpo` = SHA-256 de esos bytes.
-- **[D]** `DB_PATH` relativo se resuelve contra `parte-a/`, no contra el directorio actual (por defecto `parte-a/data/leads.db`, ignorado por git). Las variables se leen del entorno; no se carga `.env` automáticamente.
+- **[D]** `DB_PATH` relativo se resuelve contra `parte-a/`, no contra el directorio actual (por defecto `parte-a/data/leads.db`, ignorado por git). Las variables se leen del entorno y, desde el Bloque 2b, también de un `.env` (ver Bloque 2b).
 - **[D]** El trabajo `procesar_evento` se crea en la misma transacción que el evento, **solo para eventos `pendiente`**. Un evento `rechazado` en la recepción no genera trabajo (no hay nada que procesar). `UNIQUE(evento_id, tipo)` garantiza un único trabajo por evento.
 
 ### Idempotencia
@@ -28,7 +28,7 @@ Leyenda: **[R]** requisito confirmado · **[D]** decisión propia · **[S]** sup
 - `estado ∈ {procesado, duplicado, rechazado, fallido, pendiente}`, por defecto `pendiente`.
 - `ruta` no nula **si y solo si** `estado = 'procesado'`.
 - `motivo` obligatorio (no vacío) en `duplicado`, `rechazado` y `fallido`. **[L]** El "motivo obligatorio en ruta basura" no se fuerza todavía: los valores de `ruta` se definen en el Bloque 2.
-- **[D]** `trabajos.estado` aún sin CHECK: sus estados se fijan cuando exista el procesador.
+- ~~**[D]** `trabajos.estado` aún sin CHECK.~~ Desde el Bloque 2b: `CHECK (estado IN ('pendiente','en_curso','hecho','fallido'))`.
 
 ### GET /leads/estado
 - **[R]** Los 8 campos del contrato (confirmados por el enunciado) son: `event_id, estado, ruta, lead_id, duplicado_de, telefono_e164, email, motivo`.
@@ -47,7 +47,7 @@ Leyenda: **[R]** requisito confirmado · **[D]** decisión propia · **[S]** sup
 - **[L]** El cuerpo crudo (en `eventos` y `repeticiones`) contiene datos personales y no tiene política de retención ni borrado.
 - **[L]** Un evento con `event_id` inválido (tipo no aceptado o vacío) se guarda con `event_id NULL` y pierde la deduplicación por `event_id`: si se repite, aunque sea con otro texto, cada envío crea una fila nueva.
 - **[D]** Los sustitutos UTF-16 sueltos en `event_id` y `created_at` (p. ej. `"evt_\ud800"`) se escapan como texto (`evt_\\ud800`) con `backslashreplace`, de forma determinista, así el reenvío sigue siendo idempotente.
-- **[D]** Si falla algo que no es SQLite al interpretar o insertar el evento, se guarda el cuerpo crudo como `rechazado`, con `event_id NULL` y motivo "No se pudo interpretar el evento", y se responde 2xx. Solo si ese guardado también falla se responde 503. En el log se registra únicamente el tipo de error.
+- ~~**[D]** Si falla algo que no es SQLite al interpretar el evento, se guarda como `rechazado`.~~ Cambiado en el Bloque 2b: ahora se guarda como `pendiente` y con trabajo (ver "Respaldo del webhook" en el Bloque 2b).
 - **[D]** Un `desde` válido pero fuera de rango al convertirlo a UTC (p. ej. `0001-01-01T00:00:00+01:00`) responde 400.
 - **[L]** Colisión del escape: un `event_id` que llegue literalmente como el texto `evt_\ud800` (con barra invertida; en JSON `"evt_\\ud800"`) queda igual que uno con el sustituto real `"evt_\ud800"`, y se trataría como el mismo evento. Es muy improbable en la práctica; se acepta.
 - **[L]** Se requiere Python 3.11 o superior: `datetime.fromisoformat` acepta el sufijo `Z` desde 3.11.
@@ -55,7 +55,7 @@ Leyenda: **[R]** requisito confirmado · **[D]** decisión propia · **[S]** sup
 
 ## Bloque 2a · Normalización, validación y duplicados de negocio
 
-Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`procesar_evento(con, evento_id)`). **[L]** Aún no hay hilo trabajador que lo llame, ni API de pacientes, LLM, avisos o reintentos: se prueba llamándolo directamente. La tabla `trabajos` no se actualiza todavía.
+Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`procesar_evento(con, evento_id)`). Desde el Bloque 2b lo llama el trabajador como primera etapa (`normalizar_y_duplicados`).
 
 ### Tipo de evento y estructura
 - **[R]** `event_type` ausente o distinto de `"lead.created"` (comparación exacta) → `rechazado`, motivo "Tipo de evento no soportado".
@@ -64,7 +64,7 @@ Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`pr
 - **[D]** `source` ausente o que no es un objeto se trata como vacío: no rechaza, solo genera advertencias.
 
 ### Teléfono
-- **[R]** Se quitan espacios, guiones y paréntesis; región por defecto EC. Se acepta `str` o `int` (no booleano); otro tipo → inválido. Tras limpiar solo se admiten `+` inicial y dígitos ASCII (así `"abc"` → None sin depender de la librería).
+- **[R]** Se quitan espacios, guiones, paréntesis y puntos (los puntos desde el Bloque 2b: `"099.123.4567"` → `+593991234567`); región por defecto EC. Se acepta `str` o `int` (no booleano); otro tipo → inválido. Tras limpiar solo se admiten `+` inicial y dígitos ASCII (así `"abc"` → None sin depender de la librería).
 - **[R]** 12 dígitos sin `+` que empiezan con `593` = prefijo de país sin `+` (el entero `593987650021` → `+593987650021`).
 - **[R]** El número se guarda en E.164 solo si `phonenumbers.is_valid_number` lo da por válido; `"1111111111"` → None.
 - **[Probado]** `+1 (305) 555-0142`: con `phonenumbers==9.0.41`, `is_valid_number=True` → `+13055550142`. Por eso **no** se implementó la vía de respaldo (`is_possible_number` + advertencia `telefono_no_verificado`): no hace falta para los datos dados, y aceptar números solo "posibles" relajaría la validación. Si una versión futura de la librería lo diera por inválido, el evento 04 se aceptaría igual por su correo, con la advertencia `telefono_invalido`.
@@ -97,8 +97,8 @@ Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`pr
 - **[D] D4 · Un duplicado no pierde información nueva** (Bloque 2a.1). El duplicado no genera un lead nuevo ni una llamada nueva, pero su mensaje y su servicio normalizados se guardan en la tabla `lead_mensajes` (`lead_id` del original, `evento_id` UNIQUE, `recibido_at`, `servicio`, `mensaje`, `creado_at`). El estado público del duplicado no cambia: sigue `duplicado`, con su motivo.
   - **[L]** Pendiente: en el bloque de clasificación y avisos se añadirá una etapa que revise estos mensajes y avise a recepción como "actualización de un lead existente" si hay urgencia o intención de agendar (p. ej. "Solo quiero precios" seguido de "Tengo sangrado abundante y quiero atención inmediata"). Hasta entonces el mensaje queda guardado y consultable en `lead_mensajes`, pero nadie recibe aviso.
 - **[D]** Ventana inclusiva: `received_at` del original ≥ `received_at` actual − N días. "Anterior" = `id` menor (orden de llegada). Solo se buscan originales entre eventos con fila en `leads`, es decir, aceptados.
-- **[L]** El resultado depende del orden de procesamiento: si un evento posterior se procesa antes que uno anterior, el anterior no lo verá como original. El trabajador del bloque siguiente debe procesar en orden de llegada.
-- **[L]** Si la variable `DUPLICADO_VENTANA_DIAS` no es un entero o es negativa, `procesar_evento` falla con `ValueError` en lugar de usar el valor por defecto.
+- **[L]** El resultado depende del orden de procesamiento: si un evento posterior se procesa antes que uno anterior, el anterior no lo verá como original. El trabajador del Bloque 2b procesa en orden de llegada (ver allí).
+- ~~**[L]** Un `DUPLICADO_VENTANA_DIAS` inválido hace fallar `procesar_evento`.~~ Desde el Bloque 2b se valida al arrancar: un valor inválido (o `<= 0`) impide arrancar.
 
 ### Idempotencia del procesamiento
 - **[R]** `procesar_evento` corre en una sola transacción `BEGIN IMMEDIATE`. Solo actúa si el evento está `pendiente` y sin `lead_id`; si no, devuelve el estado actual sin tocar nada. Además, `leads.evento_id` es `UNIQUE`: procesar dos veces el mismo evento no puede crear dos filas.
@@ -108,3 +108,51 @@ Implementado en `app/normalizar.py` (funciones puras) y `app/procesador.py` (`pr
 
 ### Base de datos
 - **[D]** Nuevas tablas `leads` y `lead_mensajes` (sin migraciones: hay que borrar `data/leads.db*` antes de arrancar). `CHECK` de que haya teléfono o correo y de que `advertencias` sea JSON válido; índices por teléfono, correo y `clave_nombre`. La tabla `eventos` no cambió.
+
+## Bloque 2b · Procesador de trabajos
+
+Implementado en `app/trabajador.py`. **[L]** Aún no hay API de pacientes, LLM ni avisos.
+
+### Un solo hilo
+- **[D]** Un único hilo demonio, iniciado en el `lifespan` de FastAPI si `WORKER_ACTIVO` no es `0` y detenido limpiamente al apagar (con un `Event` y `join`). Cuando no hay trabajo espera `WORKER_INTERVALO_S` con `Event.wait`, así se despierta al instante al apagar.
+- **Por qué un solo hilo:** la detección de duplicados necesita ver los eventos en orden de llegada (un evento solo puede ser duplicado de uno anterior ya procesado). Con varios hilos, dos eventos de la misma persona podrían procesarse a la vez y ninguno vería al otro. El volumen de una clínica no necesita más paralelismo.
+- **[D]** Un error inesperado del bucle (p. ej. `database is locked`) se registra solo por su tipo y el hilo sigue vivo: espera un intervalo y vuelve a intentar.
+- **[L]** Con un solo proceso de uvicorn. Si se lanzaran varios (`--workers N`), habría varios hilos: el reclamo atómico evita que dos tomen el mismo trabajo, pero se perdería la garantía de orden. Se debe ejecutar con un único proceso.
+
+### Cola, reclamo y lease
+- **[R]** `reclamar_trabajo(con, ahora)`: en `BEGIN IMMEDIATE` toma el trabajo `pendiente` más antiguo **por id** con `proximo_intento_at <= ahora`, lo pasa a `en_curso`, fija `lease_hasta = ahora + TRABAJO_LEASE_S` e incrementa `intentos`. El bloqueo de escritura garantiza que dos conexiones no reclamen el mismo trabajo.
+- **[R]** `recuperar_expirados(con, ahora)`: los `en_curso` con `lease_hasta < ahora` vuelven a `pendiente` con `proximo_intento_at = ahora`. Se ejecuta al arrancar y en cada vuelta del bucle. El intento interrumpido cuenta como intento.
+- **[D]** Si un trabajo con lease vencida ya agotó sus intentos (el proceso murió durante el último), pasa a `fallido` con error `LeaseVencido` en vez de volver a `pendiente`; así un evento que tumba el proceso no se reintenta para siempre.
+- **[D]** Protección contra un dueño perdido: las escrituras del trabajador sobre un trabajo exigen `estado = 'en_curso'` y el mismo `intentos` que al reclamarlo. Si la lease venció y el trabajo se volvió a reclamar, el ejecutor anterior ya no puede cerrarlo.
+- **[D]** Todas las funciones reciben `ahora` por parámetro; los tests controlan el tiempo sin esperas reales (salvo los del hilo real).
+
+### Etapas
+- **[R]** `ETAPAS` es una lista ordenada de `Etapa(nombre, función)`. Por ahora una sola: `normalizar_y_duplicados` (llama a `procesar_evento`). Tras cada etapa se guarda su nombre en `trabajos.etapa` (última completada); al reanudar se sigue desde la siguiente. Las etapas futuras (API de pacientes, clasificación, revisión de mensajes de duplicados, avisos) se añaden a la lista sin tocar el resto.
+- **[D]** Cada etapa gestiona sus propias transacciones y debe ser idempotente: la marca de etapa se escribe después, en otra transacción. Si el proceso muere entre ambas, la etapa se repite sin efecto. Así una etapa con una llamada externa no tiene que mantener el bloqueo de escritura de SQLite mientras espera la red.
+- **[D]** Si `trabajos.etapa` tiene un nombre desconocido (p. ej. una etapa renombrada), se repiten todas: son idempotentes.
+- **[D]** Cuando todas las etapas terminan, el trabajo queda `hecho`. El evento sigue `pendiente` (con su lead) hasta que existan las etapas que lo llevan a `procesado`.
+- **[L]** Las etapas futuras deberán comprobar el estado del evento: si la primera lo dejó `rechazado` o `duplicado`, no deben actuar sobre él.
+
+### Reintentos
+- **[R]** Si una etapa lanza una excepción: se registra **solo el tipo** de error (sin el mensaje, que puede llevar datos del lead) y se guarda ese tipo en `ultimo_error`. Si `intentos < max_intentos`, vuelve a `pendiente` con `proximo_intento_at = ahora + espera`: **30 s, 2 min, 10 min, 30 min** (el último valor se repite).
+- **[R]** Máximo **5 intentos** por defecto (`TRABAJO_MAX_INTENTOS`, guardado en `trabajos.max_intentos` al crear el trabajo). **Lease de 60 s** (`TRABAJO_LEASE_S`). Al agotarse: trabajo `fallido` y el evento pasa a `fallido` con motivo "Procesamiento fallido tras N intentos (<tipo de error>)", **solo si sigue `pendiente`**: nunca se pisa un `rechazado` ni un `duplicado`.
+- **[L]** Un trabajo en espera de reintento no bloquea a los siguientes: los más nuevos se procesan mientras tanto, y el orden de llegada deja de cumplirse para ese evento.
+
+### La etapa de duplicados va primero
+- **[D]** `normalizar_y_duplicados` es la primera etapa, antes de cualquier llamada externa (API de pacientes, LLM). Solo usa SQLite y funciones puras, así que casi no puede fallar por causas externas, y el orden de llegada se respeta en la práctica.
+- **[L]** La detección de duplicados sigue dependiendo del orden de llegada: si esta etapa fallara para un evento y se reintentara más tarde, los eventos posteriores de esa persona ya se habrían procesado sin verlo.
+
+### Respaldo del webhook (cambio respecto al Bloque 1.2)
+- **[D]** Si ocurre una excepción que no es de SQLite al interpretar el cuerpo durante la recepción, el cuerpo crudo se guarda como **`pendiente`** (antes `rechazado`), con `event_id NULL`, sin motivo y **con su trabajo**, para que el procesador lo intente por su cuenta con reintentos. Se registra solo el tipo de error. Si ese guardado también falla → 503.
+- **[L]** Ese evento pierde la deduplicación por `event_id`: si el conector lo reenvía, se guarda otra fila.
+
+### Configuración y .env
+- **[R]** Todo se valida en `create_app` (`config.cargar_config`). Un valor ausente o vacío usa el defecto; uno no vacío pero inválido (texto donde va un entero, o `<= 0`) hace **fallar el arranque** con un mensaje que nombra la variable, sin repetir su valor. Nunca falla al procesar cada evento: el trabajador recibe los valores ya validados.
+- **[D]** `WORKER_ACTIVO` solo admite `0` o `1` (vacío = `1`). `DUPLICADO_VENTANA_DIAS = 0` ahora también es inválido (antes se aceptaba).
+- **[R]** Variables nuevas, con defectos: `WORKER_ACTIVO=1`, `WORKER_INTERVALO_S=1`, `TRABAJO_LEASE_S=60`, `TRABAJO_MAX_INTENTOS=5`. Todas en `.env.example`, vacías.
+- **[R]** Lector de `.env` con la librería estándar: líneas `CLAVE=VALOR`; ignora comentarios (`#`) y líneas vacías; no pisa variables ya definidas en el entorno. Busca primero `./.env` y luego `../.env` (relativos al directorio actual) y carga **solo el primero que encuentra**.
+- **[D]** Admite además un prefijo `export ` y comillas que envuelven todo el valor. **[L]** No admite comentarios al final de la línea (`CLAVE=valor # nota` deja `valor # nota`) ni valores en varias líneas.
+- **[D]** Los tests no leen el `.env` real: `tests/conftest.py` desactiva la búsqueda, limpia las variables y apaga el trabajador salvo donde un test lo activa.
+
+### Base de datos
+- **[R]** `trabajos` añade `etapa` (por defecto `'pendiente'` = ninguna completada), `max_intentos` (por defecto 5), `lease_hasta` y `CHECK (estado IN ('pendiente','en_curso','hecho','fallido'))`. Sin migraciones: hay que borrar `data/leads.db*` antes de arrancar.
