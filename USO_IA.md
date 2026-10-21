@@ -1,7 +1,7 @@
 # Uso de IA
 
-Cómo se usó la IA para construir la Parte A. Los campos **[COMPLETAR POR EL AUTOR]** los
-rellena el autor con datos reales: no se estiman.
+Cómo se usó la IA para construir la Parte A. Las secciones de verificación personal y de tiempo
+las rellenó el autor con datos reales que él declara; no son estimaciones del asistente.
 
 ## Reparto de papeles
 
@@ -57,27 +57,25 @@ Algunos ejemplos documentados en `DECISIONES.md`:
 
 ## Verificación personal del autor
 
-**[COMPLETAR POR EL AUTOR]** Qué verificó personalmente, por ejemplo:
+Lo que verificó personalmente el autor (cada casilla marcada la ejecutó o comprobó él):
 
-- [ ] Ejecuté `python -m pytest -q` en mi máquina. Resultado: [COMPLETAR POR EL AUTOR]
+- [x] Ejecuté `python -m pytest -q` en mi máquina. Resultado: 1125 passed, 1 warning (≈ 41 s), 21-oct.
 - [ ] Seguí el README en una máquina o directorio limpio. Resultado: [COMPLETAR POR EL AUTOR]
-- [ ] Ejecuté `scripts/prueba_humo_real.py` (y `--llm`) con mis credenciales. Resultado (solo
-      códigos y claves): [COMPLETAR POR EL AUTOR]
-- [ ] Probé los flujos de n8n (avisos, errores y vigilancia) con Telegram. Resultado:
-      [COMPLETAR POR EL AUTOR]
-- [ ] Revisé el código de: [COMPLETAR POR EL AUTOR]
+- [x] Ejecuté `scripts/prueba_humo_real.py` (sin `--llm`) con mi token. Resultado (solo códigos y claves): búsqueda HTTP 200, claves `data` y `next_cursor`, 0 elementos; tratamientos omitidos (no había exactamente un paciente). `--llm` NO se ejecutó.
+- [x] Probé los flujos de n8n (avisos, errores y vigilancia) con mi propio Telegram. Resultado: los tres funcionaron; avisos de lead caliente recibidos y mensaje de vigilancia recibido con el servidor caído.
+- [x] Leí los archivos de `parte-a/app/` (con distinta profundidad).
 - [ ] Revisé el historial de git en busca de secretos (ver Bloque 6.6 en `DECISIONES.md`).
 
 ## Tiempo
 
-**[COMPLETAR POR EL AUTOR]** Horas reales invertidas (total y, si se quiere, por bloque):
+Horas reales declaradas por el autor (no se midió el tiempo por bloque):
 
 | Bloque | Horas reales |
 |---|---|
-| Fase 1 (diseño) | [COMPLETAR POR EL AUTOR] |
-| Bloques 1-2 (recepción, normalización y cola) | [COMPLETAR POR EL AUTOR] |
-| Bloque 3 (API de pacientes) | [COMPLETAR POR EL AUTOR] |
-| Bloque 4 (clasificación) | [COMPLETAR POR EL AUTOR] |
-| Bloque 5 (enrutado, avisos, errores y n8n) | [COMPLETAR POR EL AUTOR] |
-| Bloque 6 (cierre) | [COMPLETAR POR EL AUTOR] |
-| **Total** | [COMPLETAR POR EL AUTOR] |
+| Fase 1 (diseño) | ≈ 2 h |
+| Bloques 1-2 (recepción, normalización y cola) | no medido por bloque |
+| Bloque 3 (API de pacientes) | no medido por bloque |
+| Bloque 4 (clasificación) | no medido por bloque |
+| Bloque 5 (enrutado, avisos, errores y n8n) | no medido por bloque |
+| Bloque 6 (cierre) | no medido por bloque |
+| **Total** | Parte A entre 12,5 y 13,5 h + Fase 1 ≈ 2 h |

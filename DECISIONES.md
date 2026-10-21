@@ -949,8 +949,7 @@ Tests nuevos: `tests/test_reproceso.py` (15), `tests/test_verificar_payloads.py`
 
 Las 10 fallas anticipadas en `FALLAS_EnvioFinal.md` (documento de la Fase 1).
 
-**[VERIFICAR POR EL AUTOR contra su FALLAS_EnvioFinal.md]** El asistente no tiene ese
-documento: la tabla se rellenó con los títulos y estados que dictó el autor en el Bloque 6.7.
+Los títulos y estados de esta tabla los dictó el autor de memoria; no se contrastaron fila por fila con `FALLAS_EnvioFinal.md`. El asistente no tiene ese documento.
 Leyenda: ✅ construido y probado · 🟢 construido · 🟡 parcial · ⛔ fuera de alcance.
 
 | # | Falla anticipada (Fase 1) | Estado | Dónde se resolvió |
@@ -1035,15 +1034,17 @@ Leyenda: ✅ construido y probado · 🟢 construido · 🟡 parcial · ⛔ fuer
 
 ### Tiempo real invertido
 
-**[COMPLETAR POR EL AUTOR]** Horas reales: total y desglose por bloque (ver también
-`USO_IA.md`).
+Horas reales declaradas por el autor: Fase 1 ≈ 2 h (18-oct). Parte A entre 12,5 y 13,5 h: 20-oct de 16:00 a ≈ 03:00 del 21-oct (11 h de reloj, entre 1 y 2 h de pausa), ≈ 1 h la mañana del 21-oct y ≈ 2,5 h de 15:00 a ≈ 17:30 (estimado). Frente a las 3 h sugeridas y el tope de 6,5 h del enunciado, el exceso se debe a que el alcance construido fue mayor que el mínimo obligatorio (despachador de avisos con reintentos, vigilancia, CLI de reproceso, flujos de n8n y rondas de revisión externa). No se midió el tiempo por bloque (ver `USO_IA.md`).
 
 ### Credenciales: token revocado
 
-**[COMPLETAR POR EL AUTOR]** Si alguna credencial (token de la API de pacientes, clave del LLM o
-token del bot de Telegram) llegó a estar expuesta: cuál era (solo el tipo, nunca el valor),
-cuándo se revocó y si se generó una nueva. Si no hubo ninguna, indicarlo. El resultado del
-escaneo de secretos del Bloque 6.6 está más abajo.
+Durante el desarrollo se expuso una credencial; el autor no recuerda con certeza de cuál se trató (token de la API de pacientes, secreto del webhook o token del bot de Telegram), por lo que se declara el estado de las tres:
+
+- **Secreto del webhook (`N8N_SECRETO`):** regenerado el 20-oct y actualizado en `.env` y en la credencial de n8n.
+- **Token de la API de pacientes:** NO se regeneró y NO se pudo revocar el anterior: el panel de la prueba solo ofrece copiar el token, no regenerarlo. El valor en uso está en `.env` (que no se versiona) y no aparece en el historial de git (comprobado el 21-oct). El autor lo considera de bajo impacto por ser un token de la prueba técnica, pero queda declarado como riesgo residual.
+- **Token del bot de Telegram:** no se ha regenerado en BotFather; vive solo en la credencial de n8n y no está en el repositorio.
+
+El resultado del escaneo de secretos del Bloque 6.6 está más abajo.
 
 ### 6.5 · Simulación del evaluador
 - **[R]** Copia de `git ls-files -co --exclude-standard` (90 archivos, sin `.env` ni `data/`) en
