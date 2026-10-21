@@ -521,3 +521,55 @@ Cada punto se demostró primero con un test que fallaba contra el código del Bl
 - El límite de 1000 caracteres admite ahora la marca de corte.
 - "Visita http://promo.example/oferta" deja de ser spam por sí sola: el caso pasa a incluir "gana dinero".
 - La versión de prompt esperada pasa a `clasificar_lead_v2`.
+
+## Bloque 4.2 · Correcciones menores tras la revisión del 4.1
+
+Cada punto se demostró primero con un test que fallaba contra el código del 4.1 (`tests/test_bloque_4_2.py`). Los cuatro defectos se reprodujeron, y además apareció uno nuevo de rendimiento (punto 4c). El esquema de la base **no** cambió. Los 10 payloads con `LLM_PROVIDER=none` siguen dando caliente 2, tibio 5, basura 1 y duplicado 1.
+
+### 1. Documentos alfanuméricos
+- **Defecto reproducido:** `ABC123456`, `123456AB`, `A-123456`, `AB 123456`, `1234567-AB` y `12345678 XYZ` llegaban al LLM sin enmascarar (el 4.1 solo cubría 1-2 letras delante y sin separador).
+- **[D]** `[DOCUMENTO]` cubre 1-3 letras y 6-9 dígitos en cualquier orden, juntos o con guion. **Con espacio, solo si las letras van en mayúsculas** (`AB 123456`), para no tragarse palabras como "de", "al" o "es" delante de un número; en ese caso los dígitos siguen saliendo como `[NUMERO]` si son 7 o más. Se conservan las reglas del 4.1 (`[NUMERO]`) y los falsos positivos (`17:00`, `30 min`, `USD 180`, `2 citas`).
+
+### 2. Negación en enumeraciones (heurística)
+- **Defecto reproducido:** el 4.1 cortaba la negación en **cada** coma, así que "Sin dolor, hinchazón ni fiebre", "No tengo hinchazón, inflamación ni dolor", "Sin dolor, hinchazón, inflamación, fiebre" y "No tengo dolor de muela, hinchazón ni sangrado abundante" daban urgencia. "no tengo dolor, ni hinchazón" ya funcionaba: el "ni" caía en la ventana de 3 palabras.
+- **[D] Heurística:** el alcance de una negación se corta con punto, punto y coma, signos de pregunta o exclamación, las adversativas `pero`, `aunque`, `sin embargo` y `sino`, o una coma seguida de un inicio claro de cláusula nueva (`se me`, `me`, `tengo`, `estoy`, `siento`, `hay`, `ya`). Dentro de la cláusula, una señal está negada si:
+  1. hay un negador en las 3 palabras anteriores; o
+  2. (solo para la **urgencia**) es un elemento de una enumeración que empieza con una negación: entre la negación y la señal hay al menos una coma o un "ni", y cada elemento tiene como mucho 4 palabras ("tengo dolor de muela").
+- Se conservan como urgencia: "Estoy sin dolor, pero hinchado", "no me duele pero se me hinchó la cara", "no es nada grave, aunque se me rompió un diente", "No puedo esperar, tengo un dolor intenso" y "No puedo dormir del dolor intenso".
+- **[D]** La regla de la enumeración se limita a los síntomas: aplicada a todas las señales, "No tengo dolor, fiebre y quiero una cita" perdería la petición de cita (hay un test para ello).
+- **[L] Límites:**
+  - una enumeración larga con elementos de más de 4 palabras, o separada por comas pero sin "ni" ni coma justo antes de la señal, puede no reconocerse como negada;
+  - una cláusula nueva que empiece por otra palabra ("No hay problema, mi encía sangra mucho") no corta, así que la ventana de 3 palabras decide;
+  - la ironía, la doble negación y las negaciones a distancia ("nunca pensé que fuera a tener tanto dolor") no se modelan.
+
+  En caso de duda el resultado es tibio o caliente según las otras señales: no se pierde el lead.
+
+### 3. NFC y correos con espacios
+- **Defecto reproducido:** con el nombre o el texto en forma descompuesta ("Mari\u0301a"), el nombre no se enmascaraba, porque `\w` no incluye la tilde combinante y la palabra se partía. Tampoco se enmascaraban `ana @ ejemplo . com`, `ana@ejemplo .com` ni `ana @ejemplo.com`.
+- **[D]** El texto y el nombre se normalizan a **NFC** antes de enmascarar.
+- **[D]** El detector de correos tolera **un** espacio junto a `@` y junto a cada punto del dominio, y exige al menos dos etiquetas con un TLD alfabético de 2 letras o más. No enmascara una `@` suelta ("nos vemos @ las 5", "cuesta @ 20.000", "@clinica", "promo 2x1 @ 15.50 usd").
+
+### 4. Rendimiento y robustez
+- **Contexto:** el webhook no tiene autenticación ni **tope de tamaño del cuerpo**. `main.py` lee el cuerpo completo con `await request.body()`, y uvicorn no limita el tamaño del cuerpo. Hay un solo trabajador. **[L]** El tope de cuerpo del webhook sigue sin existir (se informa; no se cambió en este bloque).
+- **Defecto reproducido (b):** la expresión de correos (`[^\s@…]+@…`) era **cuadrática**: se reintentaba desde cada posición y recorría toda la cadena. Con 1 MiB de dígitos, de letras sin espacios o de emojis, reglas + enmascarado tardaban **más de 30 s** (se cortó la medición); el resto de las entradas de 1 MiB, entre 0,13 y 0,83 s.
+- **[D] (a) Tope de longitud:** antes de cualquier expresión regular, en las reglas, el enmascarado y el colapso de repetidos, un texto de más de **20 000 caracteres** se reduce a sus primeros 10 000 y últimos 10 000, con la marca ` […] ` (`normalizar.acotar_texto`). Vale para todo el procesamiento, no solo para el envío al LLM (que además recorta a 1000). El mensaje completo sigue en `cuerpo_crudo` y en `leads`.
+- **[D] (b) Correos en tiempo lineal:** se parte de cada `@` (`str.find`) y se expande a izquierda y derecha. Si no hay `@`, no se hace nada.
+- **(c) Hallazgo nuevo, reproducido y corregido:** dentro del tope seguían siendo cuadráticos los patrones de **dominio sin protocolo** (`\b[A-Za-z0-9-]+(?:\.…)*\.(?:com|…)`), en `enmascarar.py` y en `reglas.py`. Con 20 000 caracteres de `a.a.a.…`, `a-a-a-…` o `7.7.7.…` tardaban entre 4,6 y 6,7 s. Ahora el dominio solo puede empezar al inicio de un tramo de letras, puntos y guiones (`(?<![A-Za-z0-9.-])` en lugar de `\b`), y tarda entre 0,01 y 0,02 s.
+- **[Probado] Tiempos (reglas + enmascarado, 1 MiB por entrada):**
+
+  | Entrada | Antes | Después |
+  |---|---|---|
+  | solo dígitos | > 30 s | 0,006 s |
+  | solo espacios | 0,131 s | 0,003 s |
+  | texto sin @ | 0,592 s | 0,011 s |
+  | muchas @ | 0,830 s | 0,024 s |
+  | frase repetida | 0,618 s | 0,012 s |
+  | palabra larga sin espacios | > 30 s | 0,006 s |
+  | dígitos y espacios alternados | 0,441 s | 0,009 s |
+  | solo emojis | > 30 s | 0,013 s |
+
+  El test (`test_42_entradas_adversarias_de_1_mib`, 12 entradas, incluidas las del punto c) exige menos de 1 s por entrada; los tiempos reales rondan 0,02 s, así que el margen es amplio.
+- **[L]** No se auditaron todas las expresiones contra todos los patrones adversarios posibles: el tope de 20 000 caracteres acota el peor caso de cualquier patrón que quede.
+
+### Tests
+- `tests/test_bloque_4_2.py`: 48 tests (documentos, falsos positivos, negación en listas y su conservación, NFC, correos con espacios y `@` sueltas, 12 entradas adversarias, tope que conserva el inicio y el final).

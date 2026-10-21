@@ -6,6 +6,11 @@ from collections import Counter
 import phonenumbers
 
 REGION_POR_DEFECTO = "EC"
+# Tope de longitud antes de cualquier expresión regular (reglas, enmascarado, colapso).
+# El webhook no tiene autenticación ni tope de cuerpo y hay un solo trabajador: un mensaje
+# enorme no puede bloquearlo. Se conservan el inicio y el final.
+MAX_TEXTO_PROCESADO = 20_000
+MARCA_CORTE = " […] "
 EMAIL_MAX = 254
 
 SERVICIOS = (
@@ -21,6 +26,14 @@ _EMAIL_LOCAL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}")
 _EMAIL_ETIQUETA = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")  # 1-63, sin '-' en los bordes
 _EMAIL_TLD = re.compile(r"[a-z]{2,}|xn--[a-z0-9-]+")
 EMAIL_DOMINIO_MAX = 253
+
+
+def acotar_texto(texto: str, maximo: int = MAX_TEXTO_PROCESADO) -> str:
+    """Si excede 'maximo', conserva la primera y la última mitad con una marca de corte."""
+    if len(texto) <= maximo:
+        return texto
+    mitad = maximo // 2
+    return texto[:mitad] + MARCA_CORTE + texto[-mitad:]
 
 
 def texto_seguro(s: str) -> str:

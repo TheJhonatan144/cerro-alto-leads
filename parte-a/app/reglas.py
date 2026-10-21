@@ -13,11 +13,22 @@ SENALES_CALIENTES = ("urgencia_clinica", "pide_agendar_o_llamada", "alto_valor_c
 # Positivas: impiden declarar basura (además de las calientes, el interés real).
 SENALES_POSITIVAS = SENALES_CALIENTES + ("interes_en_servicio",)
 
-# Cláusulas: el alcance de una negación no cruza separadores ni adversativas
-# ("sin dolor, pero hinchado" sí es urgencia).
-_FRASES = re.compile(r"[.!?;,\n¿¡]+|(?<![a-z0-9])(?:pero|aunque|sin embargo|sino)(?![a-z0-9])")
+# Cláusulas (heurística, Bloque 4.2): el alcance de una negación se corta con punto, punto y
+# coma, signos de pregunta o exclamación, adversativas ("sin dolor, pero hinchado" sí es
+# urgencia) o una coma seguida de un inicio claro de cláusula nueva ("no puedo esperar,
+# tengo dolor"). Una coma dentro de una enumeración NO corta ("sin dolor, hinchazón ni fiebre").
+_FRASES = re.compile(
+    r"[.!?;\n¿¡]+"
+    r"|(?<![a-z0-9])(?:pero|aunque|sin embargo|sino)(?![a-z0-9])"
+    r"|,(?=\s*(?:se me|me|tengo|estoy|siento|hay|ya)(?![a-z0-9]))"
+)
+_NEGADOR = re.compile(r"(?<![a-z0-9])(?:" + "|".join(sorted(d.NEGADORES)) + r")(?![a-z0-9])")
+_SEPARADOR_LISTA = re.compile(r",|(?<![a-z0-9])(?:ni|y|o)(?![a-z0-9])")
+_LISTA_NEGABLE = re.compile(r",|(?<![a-z0-9])ni(?![a-z0-9])")
+MAX_PALABRAS_ELEMENTO = 4  # elementos cortos: "hinchazón", "tengo dolor de muela"
 _PALABRA = re.compile(r"[a-z0-9]+")
-_URL = re.compile(r"(?:https?://|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|ec|io|ly|me|co|info|biz|xyz|example)/\S*")
+# El dominio sin protocolo solo empieza al inicio de un tramo (tiempo lineal, Bloque 4.2).
+_URL = re.compile(r"(?:https?://|www\.)\S+|(?<![a-z0-9.-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|ec|io|ly|me|co|info|biz|xyz|example)/\S*")
 
 
 def _patron(lista) -> re.Pattern:
@@ -56,24 +67,41 @@ def _frases(texto: str) -> list[str]:
     return [f.strip() for f in _FRASES.split(texto) if f.strip()]
 
 
-def _negada(frase: str, inicio: int) -> bool:
+def _en_lista_negada(previo: str) -> bool:
+    """La señal es un elemento de una enumeración que empieza con una negación:
+    "sin dolor, hinchazón, inflamación, fiebre". Exige al menos una coma o "ni" entre la
+    negación y la señal, y elementos de como mucho MAX_PALABRAS_ELEMENTO palabras."""
+    negadores = list(_NEGADOR.finditer(previo))
+    if not negadores:
+        return False
+    tramo = previo[negadores[-1].end():]
+    if not _LISTA_NEGABLE.search(tramo):
+        return False
+    return all(len(_PALABRA.findall(e)) <= MAX_PALABRAS_ELEMENTO for e in _SEPARADOR_LISTA.split(tramo))
+
+
+def _negada(frase: str, inicio: int, listas: bool = False) -> bool:
     previas = _PALABRA.findall(frase[:inicio])[-3:]
-    return any(p in d.NEGADORES for p in previas)
+    if any(p in d.NEGADORES for p in previas):
+        return True
+    return listas and _en_lista_negada(frase[:inicio])
 
 
-def _hay(patron: re.Pattern, frases: list[str], negable: bool = True) -> bool:
+def _hay(patron: re.Pattern, frases: list[str], negable: bool = True, listas: bool = False) -> bool:
     for frase in frases:
         for m in patron.finditer(frase):
-            if not (negable and _negada(frase, m.start())):
+            if not (negable and _negada(frase, m.start(), listas)):
                 return True
     return False
 
 
 def _urgencia(frases: list[str], texto: str) -> bool:
     limpias = [_DOLOR_NO_DENTAL.sub(" ", f) for f in frases]
-    if _hay(_URGENCIA, limpias):
+    # Solo para síntomas: la enumeración negada no anula otras señales ("no tengo dolor,
+    # fiebre y quiero una cita" sigue pidiendo cita).
+    if _hay(_URGENCIA, limpias, listas=True):
         return True
-    return _hay(_FIEBRE, limpias) and bool(_CONTEXTO_DENTAL.search(_DOLOR_NO_DENTAL.sub(" ", texto)))
+    return _hay(_FIEBRE, limpias, listas=True) and bool(_CONTEXTO_DENTAL.search(_DOLOR_NO_DENTAL.sub(" ", texto)))
 
 
 def _telefono_falso(telefono) -> bool:
@@ -103,7 +131,8 @@ def _campo(enr, clave):
 def evaluar(mensaje, *, servicio=None, campana=None, enriquecimiento=None,
             telefono=None, email=None) -> ResultadoReglas:
     """Señales sobre el mensaje, el servicio, la campaña, el enriquecimiento y los contactos."""
-    texto = n.clave_nombre(mensaje) if isinstance(mensaje, str) else ""
+    # Tope antes de cualquier expresión regular (Bloque 4.2).
+    texto = n.clave_nombre(n.acotar_texto(mensaje)) if isinstance(mensaje, str) else ""
     frases = _frases(texto)
     clave_servicio = n.clave_nombre(servicio) if isinstance(servicio, str) else ""
     clave_campana = n.clave_nombre(campana) if isinstance(campana, str) else ""
