@@ -1191,3 +1191,7 @@ Prueba real (21-oct, ejecutada por el autor): 1 petición de búsqueda, HTTP 200
 - **[L]** Si la API devolviera una forma inválida **de forma permanente** para un paciente, se
   hacen las 3 reprogramaciones (4 consultas) y después se degrada a `no_disponible`. El cambio
   no corrige una respuesta inválida, solo absorbe la intermitente.
+
+### Limitación abierta antes de la entrega: fallos 5xx de la API de pacientes
+
+Observado por el autor con la API real (21-oct, tres corridas de los 10 payloads): el mismo evento 06 (paciente con tratamiento pendiente, que debe ser caliente) dio `forma_inesperada` en la corrida 1, salió bien en la 2 y recibió un `error_del_servidor` (5xx) en la 3. Hoy `forma_inesperada` y el 429 se reprograman con el trabajador (hasta 3 veces); los 5xx, timeouts y errores de red solo tienen un reintento inmediato y después degradan a `no_disponible`, de modo que un lead de paciente con tratamiento pendiente puede clasificarse tibio y no generar el aviso de lead caliente. El lead no se pierde: queda procesado con reglas y registrado con una incidencia. Corrección propuesta y no implementada por falta de tiempo: extender la misma reprogramación a 5xx, timeouts y errores de red (sin tocar 400, 401, 403 ni 404).
