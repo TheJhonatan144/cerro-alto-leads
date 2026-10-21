@@ -252,6 +252,8 @@ y la ruta resultante; nunca tokens, URLs ni cuerpos. Los tests la prueban solo c
 
 ## 8. Flujos de n8n (opcionales; probados por el autor)
 
+n8n no viene incluido en este repositorio: hace falta una instancia propia (el autor usó la imagen oficial de n8n en Docker Desktop, con la interfaz en <http://localhost:5678>; para instalarlo, consulta la documentación oficial de n8n). Sin n8n el sistema funciona igual, con `archivo` como canal de avisos y de errores.
+
 El núcleo **no depende de n8n**. Si n8n falla, el aviso sigue en la bandeja de la base, se
 reintenta y queda en el archivo de auditoría. Los flujos están en `parte-a/n8n/`:
 
