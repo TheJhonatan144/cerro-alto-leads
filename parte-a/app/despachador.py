@@ -172,11 +172,28 @@ def _registrar_fallo(con, aviso, codigo: str, permanente: bool, momento: datetim
     return "pendiente"
 
 
+def _entregar(con, tabla: str, registro, texto: str, canal) -> None:
+    """D18 corregida: con notificadores, el archivo es auditoría (una línea por registro, no
+    cuenta como entrega) y solo un notificador entrega. Sin notificadores (o con un canal
+    simple), el envío del canal es la entrega. Lanza ErrorCanal si no se entregó."""
+    if tabla not in _TABLAS_COLA:
+        raise ValueError("tabla de cola desconocida")
+    presupuesto = Presupuesto(PRESUPUESTO_ENVIO_S)
+    if getattr(canal, "notificadores", None):
+        if not registro["archivado"] and canal.archivar(texto, registro, presupuesto):
+            con.execute(f"UPDATE {tabla} SET archivado = 1 WHERE id = ?", (registro["id"],))
+        canal.notificar(texto, registro, presupuesto)
+        return
+    canal.enviar(texto, registro, presupuesto)
+    if getattr(canal, "auditoria", None):  # solo archivo: la entrega es la línea escrita
+        con.execute(f"UPDATE {tabla} SET archivado = 1 WHERE id = ?", (registro["id"],))
+
+
 def enviar_aviso(con, aviso, canal, reloj: Callable[[], datetime] = _ahora) -> str:
     """Renderiza y envía un aviso reclamado. Devuelve 'enviado', 'pendiente' o 'fallido'."""
     try:
         texto = renderizar(con, aviso)
-        canal.enviar(texto, aviso, Presupuesto(PRESUPUESTO_ENVIO_S))
+        _entregar(con, "avisos", aviso, texto, canal)
     except ErrorCanal as e:
         return _registrar_fallo(con, aviso, e.codigo, e.tipo == "permanente", reloj())
     except Exception as e:  # solo el tipo: el mensaje podría llevar datos del lead
@@ -208,7 +225,7 @@ def _fallo_incidencia(con, inc, codigo: str, permanente: bool, momento: datetime
 
 def enviar_incidencia(con, inc, canal, reloj: Callable[[], datetime] = _ahora) -> str:
     try:
-        canal.enviar(plantillas.incidencia(dict(inc)), inc, Presupuesto(PRESUPUESTO_ENVIO_S))
+        _entregar(con, "incidencias", inc, plantillas.incidencia(dict(inc)), canal)
     except ErrorCanal as e:
         return _fallo_incidencia(con, inc, e.codigo, e.tipo == "permanente", reloj())
     except Exception as e:

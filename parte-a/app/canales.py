@@ -178,21 +178,45 @@ def cuerpo_n8n_error(incidencia: dict) -> dict:
             "ocurrencias": incidencia.get("ocurrencias"), "ts": incidencia.get("creado_at")}
 
 
+NOTIFICADORES = ("telegram", "n8n")  # llegan a una persona; el archivo es solo auditoría
+
+
 class CanalCompuesto:
-    """Envía a todos los canales en orden. Es 'enviado' si al menos uno tuvo éxito; si todos
-    fallan, el error es permanente solo si todos fueron permanentes. Semántica "al menos una
-    vez" por canal: un reintento vuelve a enviar a todos."""
+    """Varios canales a la vez (D18 corregida en el Bloque 5b.1).
+
+    - Notificadores (telegram, n8n y cualquier canal que no sea el archivo): el registro solo
+      está entregado si AL MENOS UN notificador lo acepta. Si todos fallan, el error es
+      permanente solo si todos fueron permanentes.
+    - Auditoría (archivo): se escribe una vez por registro y NO cuenta como entrega; un fallo
+      del archivo no cambia el resultado.
+    - Si no hay ningún notificador, el archivo sí es la entrega.
+    Semántica "al menos una vez" por notificador: un reintento vuelve a enviar a todos.
+    """
 
     def __init__(self, canales: list):
         self.canales = list(canales)
         self.nombre = ",".join(c.nombre for c in self.canales)
+        self.notificadores = [c for c in self.canales if c.nombre != "archivo"]
+        self.auditoria = [c for c in self.canales if c.nombre == "archivo"]
 
     def __repr__(self) -> str:
         return f"<CanalCompuesto {self.nombre}>"
 
-    def enviar(self, texto: str, registro, presupuesto: Presupuesto | None = None) -> None:
+    def archivar(self, texto: str, registro, presupuesto: Presupuesto | None = None) -> bool:
+        """Escribe la línea de auditoría. True si se escribió; un fallo solo se registra."""
+        for canal in self.auditoria:
+            try:
+                canal.enviar(texto, registro, presupuesto)
+                return True
+            except ErrorCanal as e:
+                log.warning("auditoría en archivo fallida: %s", e.codigo)
+            except Exception as e:  # solo el tipo
+                log.warning("auditoría en archivo fallida: %s", type(e).__name__)
+        return False
+
+    def notificar(self, texto: str, registro, presupuesto: Presupuesto | None = None) -> None:
         exitos, fallos = [], []
-        for canal in self.canales:
+        for canal in self.notificadores:
             try:
                 canal.enviar(texto, registro, presupuesto)
                 exitos.append(canal.nombre)
@@ -207,6 +231,16 @@ class CanalCompuesto:
             return
         tipo = "permanente" if all(e.tipo == "permanente" for _, e in fallos) else "temporal"
         raise ErrorCanal(tipo, "+".join(f"{n}:{e.codigo}" for n, e in fallos))
+
+    def enviar(self, texto: str, registro, presupuesto: Presupuesto | None = None) -> None:
+        """Entrega completa (sin memoria de 'ya archivado'; el despachador usa archivar y
+        notificar por separado para escribir el archivo una sola vez)."""
+        if not self.notificadores:
+            for canal in self.auditoria:
+                canal.enviar(texto, registro, presupuesto)  # aquí el archivo ES la entrega
+            return
+        self.archivar(texto, registro, presupuesto)
+        self.notificar(texto, registro, presupuesto)
 
 
 def crear_canal(cfg: config.Config, destino: str = "avisos") -> CanalCompuesto:

@@ -765,9 +765,19 @@ Tras añadir los 3 tests (`tests/test_mutaciones_5a.py`), las 21 mutaciones se d
   - temporales: 404 (flujo inactivo), 408, 429, 5xx, timeout y red;
   - permanentes: 400, 401, 403, 422, demás 4xx y 3xx.
 - **[D]** El `chat_id` numérico se envía como entero y el `@canal`, como texto.
-- **[R] compuesto:** `AVISOS_CANAL` acepta una lista de {archivo, telegram, n8n} (máx. 3, sin repetidos). Se envía a todos en orden. El aviso queda `enviado` si **al menos uno** tuvo éxito; si todos fallan, el error es permanente solo si todos fueron permanentes. Un éxito parcial se registra (solo nombres de canal y tipo de resultado).
-- **[L] Éxito parcial:** con `n8n,archivo`, si n8n falla y el archivo funciona, el aviso queda `enviado` y **n8n no se reintenta**. Comprobado en la prueba final: n8n recibió dos 500 y no volvió a ver esos avisos.
-- **[L] Al menos una vez por canal:** si todos fallan y se reintenta, se reenvía a todos los canales.
+- **[R] compuesto:** `AVISOS_CANAL` acepta una lista de {archivo, telegram, n8n} (máx. 3, sin repetidos).
+- **[D] Notificadores y auditoría (corregido en el Bloque 5b.1):**
+  - **notificadores** (`telegram`, `n8n`): llegan a una persona. Con al menos uno configurado, el aviso queda `enviado` solo si **al menos un notificador** lo acepta. Si todos fallan, el error es permanente solo si todos fueron permanentes; si no, es temporal y se reintenta con la secuencia de D13. Un éxito parcial entre notificadores se registra (solo nombres de canal y tipo de resultado);
+  - **auditoría** (`archivo`): se escribe **una sola vez por aviso** (columna `avisos.archivado`) y **no cuenta como entrega**. Si el archivo falla, el resultado no cambia; solo se registra el tipo de error (`archivo_no_escribible`) y se vuelve a intentar escribirlo en el siguiente intento, si lo hay;
+  - **solo archivo:** si el archivo es el único canal, el archivo sí es la entrega. Al arrancar se registra un único WARNING: `sin canal de notificación: los avisos solo se guardan en archivo`.
+  - La misma regla vale para las **incidencias** (`ERRORES_CANAL`; `errores.jsonl` es auditoría; columna `incidencias.archivado`).
+- **[D] Error de diseño en la versión anterior de D18:** el archivo contaba como un canal más y bastaba con que **uno** tuviera éxito. Con `n8n,archivo`, si n8n fallaba y el archivo funcionaba, el aviso quedaba `enviado` y **n8n no se reintentaba nunca**. Pero recepción no lee el archivo: un aviso "enviado" podía no llegar a nadie, y el plazo de 5 minutos se daba por cumplido sin que nadie supiera del lead caliente. La prueba final del 5b lo mostró (n8n recibió dos 500 y no volvió a ver esos avisos) y lo documenté como limitación, cuando era un defecto. La corrección distingue entre entregar y auditar.
+- **[R] Esquema:** columna nueva `archivado INTEGER NOT NULL DEFAULT 0 CHECK (archivado IN (0,1))` en `avisos` y en `incidencias`. `db.inicializar` usa `CREATE TABLE IF NOT EXISTS` y no migra: **hay que borrar `data/leads.db*`** antes de arrancar con este código.
+- **[R] Comprobado:**
+  - `tests/test_d18_corregida.py` (11 tests; 8 fallaban contra el código anterior);
+  - las mutaciones "basta el archivo", "archivar en cada intento", "un fallo del archivo cambia el resultado", "el archivo cuenta como notificador" y "sin aviso al arrancar" se detectan todas;
+  - prueba manual en loopback con un n8n falso que responde 500, 500 y 200 por aviso (`AVISOS_CANAL=n8n,archivo`): los 2 avisos acabaron `enviado` en el intento 3, con esperas de 5,1 s y 15,0 s, y 1 línea por aviso en el archivo.
+- **[L] Al menos una vez por notificador:** cada reintento vuelve a enviar a **todos** los notificadores, también a los que ya lo aceptaron. Si telegram acepta y n8n falla, no se reintenta (basta uno).
 - **[R] Secretos:** el token, las URLs de webhook y el secreto nunca aparecen en logs, excepciones (`raise … from None`, códigos cortos) ni repr. Los campos de la configuración tienen `repr=False` y los canales un `repr` fijo.
 - **[D]** La lease de los avisos sube de 30 a **60 s**: hasta 3 canales por 10 s, más margen.
 - **[L]** Telegram y n8n **reales NO los probó el asistente**: solo con `MockTransport` y con un servidor de loopback que simula n8n.
@@ -843,7 +853,7 @@ Tras añadir los 3 tests (`tests/test_mutaciones_5a.py`), las 21 mutaciones se d
 - **[R]** Un canal elegido sin su configuración impide arrancar, con un mensaje sin valores. Al arrancar se registra un aviso único con los canales activos (solo nombres).
 
 ### Limitaciones de 5b y 5c
-- **[L] Entrega:** "al menos una vez" por canal, y con el canal compuesto un éxito parcial no reintenta los canales que fallaron.
+- **[L] Entrega:** "al menos una vez" por notificador. Si un notificador acepta y otro falla, el que falló no se reintenta. El archivo es auditoría y nunca cuenta como entrega, salvo que sea el único canal (D18, corregida en el 5b.1).
 - **[L] Canales reales:** Telegram y n8n reales **no los probó el asistente**.
 - **[L] Resumen:** sin autenticación.
 - **[L] CLI:** `seguimientos` muestra datos personales.

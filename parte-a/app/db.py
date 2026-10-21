@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS avisos (
     lease_hasta        TEXT,
     vence_at           TEXT NOT NULL,
     vencido_notificado INTEGER NOT NULL DEFAULT 0 CHECK (vencido_notificado IN (0, 1)),
+    archivado          INTEGER NOT NULL DEFAULT 0 CHECK (archivado IN (0, 1)),  -- línea de auditoría escrita
     creado_at          TEXT NOT NULL,
     enviado_at         TEXT,
     latencia_s         REAL,
@@ -191,6 +192,7 @@ CREATE TABLE IF NOT EXISTS incidencias (
     lease_hasta     TEXT,
     enviado_at      TEXT,
     ultimo_error    TEXT,  -- solo el tipo de error
+    archivado       INTEGER NOT NULL DEFAULT 0 CHECK (archivado IN (0, 1)),
     CHECK ((estado = 'enviado') = (enviado_at IS NOT NULL))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_incidencias_pendiente_unica ON incidencias(codigo, clave)

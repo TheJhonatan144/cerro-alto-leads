@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app import config, db, errores
 from app.normalizar import normalizar_event_id
+from app.canales import NOTIFICADORES
 from app.despachador import Despachador, crear_canal
 from app.resumen import construir_resumen
 from app.resumen import parsear_desde as parsear_desde_con_zona
@@ -118,9 +119,9 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     if cfg.llm_proveedor == "none":
         log.warning("LLM_PROVIDER=none: clasificación solo con reglas")
     # Aviso único con los canales activos (solo nombres: nunca tokens, URLs ni secretos).
-    if cfg.avisos_canales == ("archivo",):
-        log.warning("canales de aviso: archivo; avisos por canal archivo (%s): recepción no recibe "
-                    "notificaciones en tiempo real", cfg.avisos_archivo.name)
+    if not any(c in NOTIFICADORES for c in cfg.avisos_canales):
+        log.warning("sin canal de notificación: los avisos solo se guardan en archivo (%s)",
+                    cfg.avisos_archivo.name)
     else:
         log.warning("canales de aviso: %s; canales de errores: %s", ", ".join(cfg.avisos_canales),
                     ", ".join(cfg.errores_canales))

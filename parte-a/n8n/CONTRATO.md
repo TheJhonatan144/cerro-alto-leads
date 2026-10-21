@@ -6,8 +6,10 @@ Este documento describe **exactamente** lo que el sistema envía a n8n y la form
 que coinciden. Todos los datos de los ejemplos son ficticios.
 
 n8n es un **adaptador opcional** (decisión "Núcleo en código + n8n opcional"): el núcleo no
-depende de él. Si n8n falla, el aviso sigue en la bandeja y se reintenta; con
-`AVISOS_CANAL=n8n,archivo` también queda en el archivo.
+depende de él. Si n8n falla, el aviso sigue en la bandeja y se reintenta. Con
+`AVISOS_CANAL=n8n,archivo`, el archivo es solo **auditoría**: se escribe una vez por aviso y no
+cuenta como entrega. El aviso solo queda `enviado` cuando n8n (o Telegram, si también está
+configurado) responde con éxito (D18, corregida en el Bloque 5b.1).
 
 ## 1. Webhook de avisos (`N8N_AVISOS_URL`)
 

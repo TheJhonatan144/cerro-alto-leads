@@ -1,0 +1,275 @@
+{
+  "name": "Cerro Alto - Vigilancia",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "71c88aee-0272-437f-a7f0-80b542238911",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/leads/resumen",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        0
+      ],
+      "id": "62e596ad-24d7-400c-ac37-f25661b3be26",
+      "name": "Consultar resumen",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=🛑 EL SERVIDOR NO RESPONDE\nCerro Alto Leads no contestó a la comprobación de las {{ $now.setZone('America/Guayaquil').toFormat('HH:mm') }}.",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        464,
+        96
+      ],
+      "id": "718c2853-3c4f-4902-a0e3-81067545573e",
+      "name": "Telegram servidor caido",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "99fd3c72-bfc4-4c1b-9d47-d9bfefe2c626",
+              "leftValue": "={{ $json.alertas.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        -96
+      ],
+      "id": "e7955067-4431-4dfd-aa8c-a25c50755cf3",
+      "name": "¿Hay alertas?"
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=⚠️ ALERTAS DEL SISTEMA ({{ $json.salud }})\n{{ $json.alertas.join(', ') }}\nPendiente más antiguo: {{ $json.pendiente_mas_antiguo_s ?? 0 }} s | avisos vencidos: {{ $json.avisos.vencidos }} | fallidos: {{ $json.avisos.fallidos }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        736,
+        -192
+      ],
+      "id": "46916eae-c4da-4e92-b3eb-51b6d3815f34",
+      "name": "Telegram alertas",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        16,
+        416
+      ],
+      "id": "79042460-c739-4959-8502-53d55beaafa1",
+      "name": "Resumen 8am"
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/leads/resumen",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        256,
+        384
+      ],
+      "id": "b3cae146-2837-4b6b-a463-fba119743cf2",
+      "name": "Consultar resumen diario",
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=📊 RESUMEN DIARIO · Cerro Alto Leads\nEstado: {{ $json.salud }}\nEventos (24 h): {{ $json.eventos.total }} · procesados {{ $json.eventos.por_estado.procesado }} · duplicados {{ $json.eventos.por_estado.duplicado }} · rechazados {{ $json.eventos.por_estado.rechazado }} · fallidos {{ $json.eventos.por_estado.fallido }} · pendientes {{ $json.eventos.por_estado.pendiente }}\nRutas: caliente {{ $json.rutas.caliente }} · tibio {{ $json.rutas.tibio }} · basura {{ $json.rutas.basura }}\nAvisos: enviados {{ $json.avisos.enviados }} · en plazo {{ $json.avisos.en_plazo.cumplen }}/{{ $json.avisos.en_plazo.total }}\nSeguimientos por revisar: {{ $json.seguimientos_pendientes }}\nAlertas: {{ $json.alertas.length ? $json.alertas.join(', ') : 'ninguna' }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        512,
+        336
+      ],
+      "id": "7f08f1b1-dbb7-4809-afc7-b27c9b2fc360",
+      "name": "Telegram resumen diario",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Consultar resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar resumen": {
+      "main": [
+        [
+          {
+            "node": "¿Hay alertas?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram servidor caido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay alertas?": {
+      "main": [
+        [
+          {
+            "node": "Telegram alertas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumen 8am": {
+      "main": [
+        [
+          {
+            "node": "Consultar resumen diario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar resumen diario": {
+      "main": [
+        [
+          {
+            "node": "Telegram resumen diario",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram servidor caido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "timezone": "America/Guayaquil",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "EirSngbQpBgmZZw2"
+  },
+  "versionId": "447db679-b94c-4a7b-acb5-e0e358ee9163",
+  "meta": {
+    "instanceId": "d54924c245dc70747848cb601a7db4a53cb2336a683dfc1625ff3340a5ae292d"
+  },
+  "nodeGroups": [],
+  "id": "IOOO5FvmKHtk2Knk",
+  "tags": []
+}

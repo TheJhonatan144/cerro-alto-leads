@@ -416,7 +416,9 @@ def test_config_avisos_defectos_y_aviso_unico(tmp_path, caplog, monkeypatch):
     assert cfg.avisos_archivo == config.BASE_DIR / "data" / "avisos.jsonl"
     caplog.set_level(logging.WARNING)
     create_app(tmp_path / "leads.db")
-    assert sum("avisos por canal archivo" in r.getMessage() for r in caplog.records) == 1
+    # Bloque 5b.1: el aviso de arranque solo con archivo cambió de texto.
+    assert sum("sin canal de notificación: los avisos solo se guardan en archivo" in r.getMessage()
+               for r in caplog.records) == 1
 
 
 def test_feriados_configurados_se_respetan(cliente, con, ruta_db, monkeypatch):
