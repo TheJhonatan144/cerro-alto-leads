@@ -5,7 +5,7 @@ import socket
 
 import pytest
 
-from app import config
+from app import config, errores
 
 VARIABLES = (
     "DB_PATH", "DUPLICADO_VENTANA_DIAS", "WORKER_ACTIVO", "WORKER_INTERVALO_S",
@@ -13,6 +13,8 @@ VARIABLES = (
     "API_PACIENTES_URL", "API_PACIENTES_TOKEN", "PACIENTES_LIMITE_POR_MIN", "PACIENTES_MAX_PAGINAS",
     "LLM_PROVIDER", "LLM_MODEL", "LLM_API_KEY", "LLM_TIMEOUT_S", "LLM_CONFIANZA_BASURA",
     "WEBHOOK_MAX_BYTES", "AVISOS_CANAL", "AVISOS_ARCHIVO", "AVISO_PLAZO_S", "FERIADOS", "AGENDA_URL",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "N8N_AVISOS_URL", "N8N_ERRORES_URL", "N8N_SECRETO",
+    "ERRORES_CANAL", "ERRORES_ARCHIVO", "ERRORES_VENTANA_S", "PENDIENTE_ANTIGUO_S", "VIGILANCIA_CADA_S",
 )
 
 
@@ -41,6 +43,10 @@ def entorno_aislado(monkeypatch, tmp_path):
     monkeypatch.setenv("WORKER_ACTIVO", "0")
     # Los avisos del canal archivo nunca van al data/ del repositorio.
     monkeypatch.setenv("AVISOS_ARCHIVO", str(tmp_path / "avisos.jsonl"))
+    monkeypatch.setenv("ERRORES_ARCHIVO", str(tmp_path / "errores.jsonl"))
+    errores.desconfigurar()
+    yield
+    errores.desconfigurar()
 
 
 @pytest.fixture(autouse=True)

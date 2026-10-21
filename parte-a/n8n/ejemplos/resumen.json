@@ -1,0 +1,42 @@
+{
+  "generado_at": "2026-11-02T15:00:00.000000Z",
+  "desde": "2026-11-01T15:00:00.000000Z",
+  "salud": "ok",
+  "eventos": {
+    "total": 6,
+    "por_estado": {
+      "procesado": 4,
+      "duplicado": 1,
+      "rechazado": 1,
+      "fallido": 0,
+      "pendiente": 0
+    }
+  },
+  "rutas": {
+    "caliente": 1,
+    "tibio": 2,
+    "basura": 1
+  },
+  "pendiente_mas_antiguo_s": null,
+  "avisos": {
+    "pendientes": 0,
+    "enviados": 1,
+    "fallidos": 0,
+    "vencidos": 0,
+    "latencia_s": {
+      "p50": 4.2,
+      "max": 4.2
+    },
+    "en_plazo": {
+      "cumplen": 1,
+      "total": 1
+    }
+  },
+  "seguimientos_pendientes": 2,
+  "incidencias_abiertas": 0,
+  "hilos": {
+    "trabajador": true,
+    "despachador": true
+  },
+  "alertas": []
+}

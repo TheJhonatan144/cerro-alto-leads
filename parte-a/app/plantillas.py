@@ -1,9 +1,60 @@
 """Textos de avisos y seguimientos. Sin LLM: solo datos de la base y hechos de la ficha.
 
-Texto plano (sin Markdown ni parse_mode). Nunca incluyen el texto libre del lead.
+Texto plano (sin Markdown ni parse_mode). Nunca incluyen el texto libre del lead. Todo campo
+que viene del lead pasa por limpiar_campo (D17): ningún valor puede añadir líneas, controles,
+marcas bidireccionales ni enlaces a la estructura fija del texto.
 """
+import re
+import unicodedata
+
 from app import agenda
+from app import normalizar as n
 from app.datos_reglas import ETIQUETAS
+
+_URL_CAMPO = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_ETIQUETA_HTML = re.compile(r"<[^>]*>")
+_TELEFONO_PERMITIDO = set("0123456789+ ()-")
+MARCA_ENLACE = "[enlace]"
+MAX_NOMBRE, MAX_SERVICIO, MAX_TELEFONO, MAX_CORREO, MAX_OTRO = 80, 60, 30, 120, 200
+
+
+def limpiar_campo(texto, maxlen: int) -> str:
+    """D17: NFC; sin caracteres de formato (Cf: bidireccionales, ceros de ancho) ni de control
+    (Cc); los saltos de línea, tabulaciones y demás espacios pasan a un espacio; espacios
+    colapsados; URLs -> [enlace]; recorte a maxlen con "…". Decisión extra: también quita
+    etiquetas HTML (<…>) conservando su contenido, por si un canal (p. ej. un correo de n8n)
+    interpretara HTML."""
+    if texto is None:
+        return ""
+    texto = n.acotar_texto(texto if isinstance(texto, str) else str(texto))
+    limpio = []
+    for c in unicodedata.normalize("NFC", texto):
+        categoria = unicodedata.category(c)
+        if c.isspace():
+            limpio.append(" ")
+        elif categoria not in ("Cc", "Cf"):
+            limpio.append(c)
+    t = _ETIQUETA_HTML.sub("", "".join(limpio))
+    t = " ".join(_URL_CAMPO.sub(MARCA_ENLACE, t).split())
+    return t if len(t) <= maxlen else t[:maxlen - 1].rstrip() + "…"
+
+
+def _telefono_limpio(valor) -> str:
+    t = "".join(c for c in limpiar_campo(valor, 200) if c in _TELEFONO_PERMITIDO)
+    return limpiar_campo(t, MAX_TELEFONO)
+
+
+def _correo_limpio(valor) -> str:
+    return limpiar_campo("".join(limpiar_campo(valor, 400).split()), MAX_CORREO)
+
+
+def _servicio_limpio(valor) -> str:
+    t = limpiar_campo(valor, MAX_SERVICIO)
+    clave = n.clave_nombre(t)
+    for canonico in n.SERVICIOS:  # catálogo de la ficha: valor canónico
+        if n.clave_nombre(canonico) == clave:
+            return canonico
+    return t
 
 MAX_SEGUIMIENTO = 499  # el seguimiento debe tener menos de 500 caracteres
 MAX_NOMBRE_PILA = 30
@@ -30,7 +81,11 @@ def _precio(c: agenda.Propuesta) -> str:
 
 
 def _contacto(d: dict) -> str:
-    return d.get("telefono_e164") or d.get("email") or "(sin contacto)"
+    return _telefono_limpio(d.get("telefono_e164")) or _correo_limpio(d.get("email")) or "(sin contacto)"
+
+
+def _campo(d: dict, clave: str, maxlen: int = MAX_OTRO, vacio: str = "") -> str:
+    return limpiar_campo(d.get(clave), maxlen) or vacio
 
 
 def _estado_paciente(d: dict) -> str:
@@ -45,10 +100,10 @@ def aviso_caliente(d: dict) -> str:
     """D11: aviso a recepción de un lead caliente. Sin el texto libre del lead ni detalle clínico."""
     lineas = [
         "Lead caliente - Clínica Dental Cerro Alto",
-        f"Nombre: {d.get('nombre') or '(sin nombre)'}",
+        f"Nombre: {_campo(d, 'nombre', MAX_NOMBRE, '(sin nombre)')}",
         f"Contacto: {_contacto(d)}",
-        f"Servicio de interés: {d.get('servicio') or 'no indicado'}",
-        f"Ruta: {d.get('ruta')}. Motivo: {d.get('motivo')}",
+        f"Servicio de interés: {_servicio_limpio(d.get('servicio')) or 'no indicado'}",
+        f"Ruta: {_campo(d, 'ruta', 20)}. Motivo: {_campo(d, 'motivo', 300)}",
         f"Paciente: {_estado_paciente(d)}",
     ]
     citas = d.get("citas") or []
@@ -58,27 +113,32 @@ def aviso_caliente(d: dict) -> str:
             f"{c.inicio:%H:%M} a {c.fin:%H:%M} (hora de Ecuador), {_precio(c)}. Nota: {c.nota}")
     if not citas:
         lineas.append("Cita tentativa: sin propuesta automática en los próximos 30 días; coordinar con la persona")
-    lineas.append(f"Evento: {d.get('event_id') or '(sin event_id)'} - Lead: {d.get('lead_id')} - "
-                  f"Recibido: {d.get('received_at')}")
+    lineas.append(f"Evento: {_campo(d, 'event_id', vacio='(sin event_id)')} - Lead: {_campo(d, 'lead_id')} - "
+                  f"Recibido: {_campo(d, 'received_at', 40)}")
     return "\n".join(lineas)
 
 
 def novedad_duplicado(d: dict) -> str:
     """D4: mensaje nuevo de un lead ya registrado con una señal caliente que el original no tenía."""
-    senales = ", ".join(ETIQUETAS.get(s, s) for s in d.get("senales") or [])
+    senales = limpiar_campo(", ".join(ETIQUETAS.get(s, s) for s in d.get("senales") or []), MAX_OTRO)
     return "\n".join([
         "Actualización de un lead existente - Clínica Dental Cerro Alto",
-        f"Nombre: {d.get('nombre') or '(sin nombre)'}",
+        f"Nombre: {_campo(d, 'nombre', MAX_NOMBRE, '(sin nombre)')}",
         f"Contacto: {_contacto(d)}",
         f"Señales nuevas: {senales}",
-        f"Evento nuevo: {d.get('event_id') or '(sin event_id)'} (recibido {d.get('received_at')}) - "
-        f"Lead original: {d.get('duplicado_de')} - Lead: {d.get('lead_id')}",
+        f"Evento nuevo: {_campo(d, 'event_id', vacio='(sin event_id)')} (recibido {_campo(d, 'received_at', 40)}) - "
+        f"Lead original: {_campo(d, 'duplicado_de')} - Lead: {_campo(d, 'lead_id')}",
     ])
 
 
 def _nombre_de_pila(nombre) -> str | None:
-    palabras = nombre.split() if isinstance(nombre, str) else []
-    return palabras[0][:MAX_NOMBRE_PILA].capitalize() if palabras else None
+    """Primer token con letras del nombre saneado: solo letras, apóstrofe y guion, máx. 30."""
+    t = limpiar_campo(nombre, MAX_NOMBRE).replace(MARCA_ENLACE, " ")
+    for token in t.split():
+        limpio = "".join(c for c in token if c.isalpha() or c in "'-").strip("'-")
+        if any(c.isalpha() for c in limpio):
+            return limpio[:MAX_NOMBRE_PILA].capitalize()
+    return None
 
 
 def _hecho_del_servicio(servicio, c: agenda.Propuesta | None) -> tuple[str, str]:
@@ -123,3 +183,15 @@ def seguimiento_tibio(nombre, servicio, citas, agenda_url=None) -> str:
         if len(texto) <= MAX_SEGUIMIENTO:
             return texto
     return texto[:MAX_SEGUIMIENTO]
+
+
+def incidencia(d: dict) -> str:
+    """Texto de una incidencia del canal de errores: solo códigos, contadores e ids."""
+    return "\n".join([
+        "Incidencia del sistema de leads - Clínica Dental Cerro Alto",
+        f"Código: {_campo(d, 'codigo', 40)}",
+        f"Ocurrencias: {_campo(d, 'ocurrencias', 12)}",
+        f"Detalle: {_campo(d, 'detalle', 200)}",
+        f"Desde: {_campo(d, 'creado_at', 40)} - Última: {_campo(d, 'ultima_at', 40)}",
+    ])
+

@@ -1,0 +1,6 @@
+{
+  "tipo": "novedad_duplicado",
+  "evento_id": 102,
+  "texto": "Actualización de un lead existente - Clínica Dental Cerro Alto\nNombre: Ana Ejemplo\nContacto: +593990000000\nSeñales nuevas: síntomas de urgencia clínica\nEvento nuevo: evt_ejemplo_002 (recibido 2026-11-02T14:58:10.123456Z) - Lead original: evt_ejemplo_001 - Lead: 00000000-0000-4000-8000-000000000001",
+  "creado_at": "2026-11-02T14:58:11.000000Z"
+}

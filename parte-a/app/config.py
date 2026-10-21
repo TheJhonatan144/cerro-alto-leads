@@ -23,9 +23,14 @@ LLM_PROVEEDORES = ("none", "gemini", "anthropic", "openai")
 LLM_TIMEOUT_S_POR_DEFECTO = 10.0
 LLM_CONFIANZA_BASURA_POR_DEFECTO = 0.8
 WEBHOOK_MAX_BYTES_POR_DEFECTO = 262_144  # 256 KiB (D16)
-AVISOS_CANALES = ("archivo",)  # Telegram y n8n llegan en el Bloque 5b
+CANALES = ("archivo", "telegram", "n8n")
+MAX_CANALES = 3
 AVISOS_ARCHIVO_POR_DEFECTO = "data/avisos.jsonl"
+ERRORES_ARCHIVO_POR_DEFECTO = "data/errores.jsonl"
 AVISO_PLAZO_S_POR_DEFECTO = 300
+ERRORES_VENTANA_S_POR_DEFECTO = 900
+PENDIENTE_ANTIGUO_S_POR_DEFECTO = 900
+VIGILANCIA_CADA_S_POR_DEFECTO = 60
 
 # Rangos admitidos (mínimo, máximo), ambos incluidos.
 RANGO_DUPLICADO_VENTANA_DIAS = (1, 90)
@@ -38,6 +43,11 @@ RANGO_LLM_TIMEOUT_S = (2.0, 30.0)
 RANGO_LLM_CONFIANZA_BASURA = (0.5, 1.0)
 RANGO_WEBHOOK_MAX_BYTES = (4096, 4_194_304)  # 4 KiB a 4 MiB
 RANGO_AVISO_PLAZO_S = (60, 3600)
+RANGO_ERRORES_VENTANA_S = (60, 86400)
+RANGO_PENDIENTE_ANTIGUO_S = (60, 86400)
+RANGO_VIGILANCIA_CADA_S = (10, 3600)
+_TOKEN_TELEGRAM = re.compile(r"[A-Za-z0-9:_-]{20,200}")  # va en la URL: sin / ? # % ni espacios
+_CHAT_TELEGRAM = re.compile(r"-?\d{1,20}|@[A-Za-z0-9_]{5,32}")
 _FECHA = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _MODELO = re.compile(r"[A-Za-z0-9._:-]{1,100}")
 
@@ -68,11 +78,30 @@ class Config:
     llm_timeout_s: float = LLM_TIMEOUT_S_POR_DEFECTO
     llm_confianza_basura: float = LLM_CONFIANZA_BASURA_POR_DEFECTO
     webhook_max_bytes: int = WEBHOOK_MAX_BYTES_POR_DEFECTO
-    avisos_canal: str = "archivo"
+    avisos_canal: str = "archivo"  # lista separada por comas, ya normalizada
     avisos_archivo: Path = BASE_DIR / AVISOS_ARCHIVO_POR_DEFECTO
     aviso_plazo_s: int = AVISO_PLAZO_S_POR_DEFECTO
     feriados: tuple[date, ...] = ()
     agenda_url: str | None = None
+    errores_canal: str = "archivo"
+    errores_archivo: Path = BASE_DIR / ERRORES_ARCHIVO_POR_DEFECTO
+    errores_ventana_s: int = ERRORES_VENTANA_S_POR_DEFECTO
+    pendiente_antiguo_s: int = PENDIENTE_ANTIGUO_S_POR_DEFECTO
+    vigilancia_cada_s: int = VIGILANCIA_CADA_S_POR_DEFECTO
+    # Secretos y destinos: repr=False (nunca en logs ni en el repr de la configuración).
+    telegram_bot_token: str | None = field(default=None, repr=False)
+    telegram_chat_id: str | None = field(default=None, repr=False)
+    n8n_avisos_url: str | None = field(default=None, repr=False)
+    n8n_errores_url: str | None = field(default=None, repr=False)
+    n8n_secreto: str | None = field(default=None, repr=False)
+
+    @property
+    def avisos_canales(self) -> tuple[str, ...]:
+        return tuple(self.avisos_canal.split(","))
+
+    @property
+    def errores_canales(self) -> tuple[str, ...]:
+        return tuple(self.errores_canal.split(","))
 
     @property
     def pacientes_configurada(self) -> bool:
@@ -188,12 +217,42 @@ def _ruta(entorno, nombre: str, defecto: str) -> Path:
     return ruta if ruta.is_absolute() else BASE_DIR / ruta
 
 
+def canales(entorno, nombre: str) -> str:
+    """Lista de canales separada por comas, de {archivo, telegram, n8n}; máx. 3, sin repetidos."""
+    valor = _valor(entorno, nombre).lower() or "archivo"
+    lista = [c.strip() for c in valor.split(",")]
+    if any(c not in CANALES for c in lista):
+        raise ConfigError(f"{nombre} solo admite: " + ", ".join(CANALES))
+    if len(lista) > MAX_CANALES or len(set(lista)) != len(lista):
+        raise ConfigError(f"{nombre} admite como mucho {MAX_CANALES} canales, sin repetirlos")
+    return ",".join(lista)
+
+
 def avisos_canal(entorno=None) -> str:
     entorno = os.environ if entorno is None else entorno
-    canal = _valor(entorno, "AVISOS_CANAL").lower() or "archivo"
-    if canal not in AVISOS_CANALES:
-        raise ConfigError("AVISOS_CANAL debe ser uno de: " + ", ".join(AVISOS_CANALES))
-    return canal
+    return canales(entorno, "AVISOS_CANAL")
+
+
+def url_webhook(entorno, nombre: str) -> str | None:
+    """URL http(s) con host y sin credenciales. El error nunca muestra el valor."""
+    valor = _valor(entorno, nombre)
+    if not valor:
+        return None
+    partes = urlsplit(valor)
+    if partes.scheme not in ("http", "https") or not partes.hostname or any(c.isspace() for c in valor):
+        raise ConfigError(f"{nombre} debe ser una URL http(s) con host")
+    if partes.username or partes.password:
+        raise ConfigError(f"{nombre} no debe llevar credenciales embebidas")
+    return valor
+
+
+def _patron(entorno, nombre: str, patron: re.Pattern, explicacion: str) -> str | None:
+    valor = _valor(entorno, nombre)
+    if not valor:
+        return None
+    if not patron.fullmatch(valor):
+        raise ConfigError(f"{nombre} {explicacion}")
+    return valor
 
 
 def feriados(entorno=None) -> tuple[date, ...]:
@@ -231,7 +290,7 @@ def agenda_url(entorno=None) -> str | None:
 
 def cargar_config(entorno=None) -> Config:
     entorno = os.environ if entorno is None else entorno
-    return Config(
+    cfg = Config(
         db_path=db_path(entorno),
         duplicado_ventana_dias=duplicado_ventana_dias(entorno),
         worker_activo=worker_activo(entorno),
@@ -259,7 +318,38 @@ def cargar_config(entorno=None) -> Config:
         aviso_plazo_s=_entero(entorno, "AVISO_PLAZO_S", AVISO_PLAZO_S_POR_DEFECTO, RANGO_AVISO_PLAZO_S),
         feriados=feriados(entorno),
         agenda_url=agenda_url(entorno),
+        errores_canal=canales(entorno, "ERRORES_CANAL"),
+        errores_archivo=_ruta(entorno, "ERRORES_ARCHIVO", ERRORES_ARCHIVO_POR_DEFECTO),
+        errores_ventana_s=_entero(entorno, "ERRORES_VENTANA_S", ERRORES_VENTANA_S_POR_DEFECTO,
+                                  RANGO_ERRORES_VENTANA_S),
+        pendiente_antiguo_s=_entero(entorno, "PENDIENTE_ANTIGUO_S", PENDIENTE_ANTIGUO_S_POR_DEFECTO,
+                                    RANGO_PENDIENTE_ANTIGUO_S),
+        vigilancia_cada_s=_entero(entorno, "VIGILANCIA_CADA_S", VIGILANCIA_CADA_S_POR_DEFECTO,
+                                  RANGO_VIGILANCIA_CADA_S),
+        telegram_bot_token=_patron(entorno, "TELEGRAM_BOT_TOKEN", _TOKEN_TELEGRAM,
+                                   "debe tener entre 20 y 200 caracteres: letras, dígitos, ':', '_' o '-'"),
+        telegram_chat_id=_patron(entorno, "TELEGRAM_CHAT_ID", _CHAT_TELEGRAM,
+                                 "debe ser un id numérico o un @canal de 5 a 32 caracteres"),
+        n8n_avisos_url=url_webhook(entorno, "N8N_AVISOS_URL"),
+        n8n_errores_url=url_webhook(entorno, "N8N_ERRORES_URL"),
+        n8n_secreto=_texto_cabecera(entorno, "N8N_SECRETO"),
     )
+    _exigir_configuracion_de_canales(cfg)
+    return cfg
+
+
+def _exigir_configuracion_de_canales(cfg: Config) -> None:
+    """Un canal elegido sin su configuración impide arrancar (mensaje sin valores)."""
+    for variable, lista in (("AVISOS_CANAL", cfg.avisos_canales), ("ERRORES_CANAL", cfg.errores_canales)):
+        if "telegram" in lista:
+            if not cfg.telegram_bot_token:
+                raise ConfigError(f"{variable} incluye telegram pero falta TELEGRAM_BOT_TOKEN")
+            if not cfg.telegram_chat_id:
+                raise ConfigError(f"{variable} incluye telegram pero falta TELEGRAM_CHAT_ID")
+    if "n8n" in cfg.avisos_canales and not cfg.n8n_avisos_url:
+        raise ConfigError("AVISOS_CANAL incluye n8n pero falta N8N_AVISOS_URL")
+    if "n8n" in cfg.errores_canales and not cfg.n8n_errores_url:
+        raise ConfigError("ERRORES_CANAL incluye n8n pero falta N8N_ERRORES_URL")
 
 
 def rutas_dotenv() -> list[Path]:

@@ -11,9 +11,11 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from app import config, db
+from app import config, db, errores
 from app.normalizar import normalizar_event_id
 from app.despachador import Despachador, crear_canal
+from app.resumen import construir_resumen
+from app.resumen import parsear_desde as parsear_desde_con_zona
 from app.trabajador import Trabajador
 
 log = logging.getLogger("leads")
@@ -115,17 +117,27 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                     "vacías): los leads quedarán con enriquecimiento=no_configurado")
     if cfg.llm_proveedor == "none":
         log.warning("LLM_PROVIDER=none: clasificación solo con reglas")
-    if cfg.avisos_canal == "archivo":
-        log.warning("avisos por canal archivo (%s): recepción no recibe notificaciones en tiempo real",
-                    cfg.avisos_archivo.name)
+    # Aviso único con los canales activos (solo nombres: nunca tokens, URLs ni secretos).
+    if cfg.avisos_canales == ("archivo",):
+        log.warning("canales de aviso: archivo; avisos por canal archivo (%s): recepción no recibe "
+                    "notificaciones en tiempo real", cfg.avisos_archivo.name)
+    else:
+        log.warning("canales de aviso: %s; canales de errores: %s", ", ".join(cfg.avisos_canales),
+                    ", ".join(cfg.errores_canales))
     ruta = Path(db_path) if db_path else cfg.db_path
     db.inicializar(ruta)
+    errores.configurar(ruta, cfg.errores_ventana_s)  # desde aquí, reportar_error escribe incidencias
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # WORKER_ACTIVO controla los dos hilos de fondo: trabajador y despachador de avisos.
-        trabajador = Trabajador(ruta, cfg) if cfg.worker_activo else None
-        despacho = Despachador(ruta, crear_canal(cfg)) if cfg.worker_activo else None
+        hilos: dict = {}
+        trabajador = (Trabajador(ruta, cfg, hilos=lambda: {"despachador": hilos["despachador"].estado()})
+                      if cfg.worker_activo else None)
+        despacho = (Despachador(ruta, crear_canal(cfg), canal_errores=crear_canal(cfg, "errores"), cfg=cfg,
+                                hilos=lambda: {"trabajador": hilos["trabajador"].estado()})
+                    if cfg.worker_activo else None)
+        hilos.update(trabajador=trabajador, despachador=despacho)
         app.state.trabajador, app.state.despachador = trabajador, despacho
         for hilo in (trabajador, despacho):
             if hilo:
@@ -220,6 +232,23 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             except (ValueError, OverflowError):  # Overflow: fuera de rango al pasar a UTC
                 return _error(400, "desde debe ser una fecha ISO 8601")
             return _consultar(db.estados_desde, desde_utc)
+        except sqlite3.Error as e:
+            return _sin_persistencia(e)
+
+    @app.get("/leads/resumen")
+    def resumen_leads(desde: str | None = None):
+        """D21: resumen operativo sin datos personales. Sin autenticación (como /leads/estado)."""
+        try:
+            momento = parsear_desde_con_zona(desde) if desde is not None else None
+        except ValueError:
+            return _error(400, "desde debe ser una fecha ISO 8601 con zona horaria")
+        hilos = {nombre: (h.vivo() if h is not None else None)
+                 for nombre, h in (("trabajador", getattr(app.state, "trabajador", None)),
+                                   ("despachador", getattr(app.state, "despachador", None)))}
+        try:
+            return _consultar(lambda con: construir_resumen(con, datetime.now(timezone.utc), momento,
+                                                            pendiente_antiguo_s=cfg.pendiente_antiguo_s,
+                                                            hilos=hilos))
         except sqlite3.Error as e:
             return _sin_persistencia(e)
 

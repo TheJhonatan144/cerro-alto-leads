@@ -689,3 +689,164 @@ Tablas nuevas: `avisos`, `seguimientos` y `citas_tentativas`.
 ### Esquema
 - **[R] Cambia:** tablas nuevas `avisos`, `seguimientos` y `citas_tentativas`. Sin migraciones: hay que borrar `data/leads.db*` antes de arrancar.
 
+## Bloques 5b y 5c · Saneado, canales, errores, vigilancia, resumen y CLI
+
+Implementado en:
+- `app/plantillas.py` (`limpiar_campo`);
+- `app/canales.py` (archivo, telegram, n8n y compuesto);
+- `app/errores.py` (manejador central);
+- `app/despachador.py` (drena avisos e incidencias);
+- `app/vigilancia.py`;
+- `app/resumen.py` (`GET /leads/resumen`);
+- `app/cli.py`;
+- `app/ejemplos_n8n.py`;
+- `parte-a/n8n/CONTRATO.md` y `parte-a/n8n/ejemplos/`.
+
+Tabla nueva: `incidencias`. Cambia el esquema: hay que borrar `data/leads.db*`.
+
+### D17 · Saneado de los campos del lead en las plantillas
+- **[R]** `limpiar_campo(texto, maxlen)`:
+  - normaliza a NFC;
+  - elimina los caracteres de formato (Cf: marcas bidireccionales como U+202E, ceros de ancho) y de control (Cc);
+  - los saltos de línea, tabulaciones y cualquier otro espacio Unicode (U+2028, U+0085…) pasan a un espacio, y los espacios se colapsan;
+  - URLs (`http://`, `https://`, `www.`) → `[enlace]`;
+  - recorta a `maxlen` con "…".
+- **[R]** Se aplica en todas las plantillas (aviso, seguimiento, novedad y, después, incidencia) a cada campo que viene del lead:
+  - nombre (80);
+  - servicio (60; el valor canónico si coincide con el catálogo);
+  - teléfono (solo dígitos, `+`, espacios, paréntesis y guion; máx. 30);
+  - correo (sin espacios ni controles; máx. 120);
+  - `event_id`, `lead_id`, `received_at`, motivo y `duplicado_de`.
+
+  La estructura fija de líneas del aviso no cambia con ningún valor (probado con saltos de línea, `\r`, U+202E, 5000 caracteres, URL, Markdown, HTML, emojis y vacío).
+- **[R]** Nombre de pila del seguimiento: el primer token con letras del nombre saneado, solo letras, apóstrofe y guion, máx. 30. Si no queda nada, "Hola".
+- **[D] Decisión extra:** `limpiar_campo` también **quita etiquetas HTML** (`<…>`) conservando su contenido. El texto es plano y Telegram no lo interpreta, pero n8n podría volcarlo en un correo HTML.
+
+### Paso 1 · Mutaciones sobre el 5a
+Se ejecutaron en un worktree temporal (`/tmp/mut`, desde HEAD; el árbol real nunca se mutó) con los tests de despachador, enrutado, agenda, plantillas, clasificación y trabajador.
+
+| Mutación | Tests que fallaron |
+|---|---|
+| a1 · aviso creado fuera de la transacción | `test_fallo_antes_del_commit_deja_el_evento_pendiente_y_sin_aviso` |
+| a2 · COMMIT de `procesado` antes de crear el aviso | `test_fallo_antes_del_commit_deja_el_evento_pendiente_y_sin_aviso` |
+| b1 · avisos sin UNIQUE ni ON CONFLICT | `test_crear_aviso_es_idempotente` |
+| b2 · seguimientos sin PK ni ON CONFLICT | **sobrevivía** → nuevo `test_reenrutar_un_pendiente_no_duplica_seguimientos_ni_citas` |
+| b3 · citas sin PK ni ON CONFLICT | **sobrevivía** → el mismo test nuevo |
+| c1 · 45 s → 40 s | `test_secuencia_exacta_de_reintentos_y_fallido_tras_10` |
+| c2 · paso de 120 s → 100 s | `test_secuencia_exacta_de_reintentos_y_fallido_tras_10` |
+| d · vencimiento notificado en cada vuelta | `test_vencido_se_notifica_una_sola_vez` |
+| e1 · 11 intentos | `test_secuencia_exacta_de_reintentos_y_fallido_tras_10` |
+| e2 · no marca fallido al agotar | la suite **se cuelga** (bucle infinito en el despacho): se detecta, pero por tiempo, no por aserción |
+| f1 · reclamo sin lease | `test_retoma_tras_reinicio_por_lease` |
+| f2 · reclamo no atómico (sin transacción) | **sobrevivía** → nuevo `test_reclamo_concurrente_nunca_entrega_un_aviso_dos_veces` (8 hilos, 30 avisos; lo detectó en 3 de 3 repeticiones) |
+| g1 · la cita puede terminar después del cierre | `test_horarios` |
+| g2 · anticipación de 1 h | `test_horarios`, `test_sin_horario_de_verano_y_ahora_en_utc` |
+| g3 · domingo abierto | `test_domingo_y_feriado_cerrados`, `test_horarios` |
+| g4 · feriados ignorados | `test_anticipacion_maxima_30_dias`, `test_domingo_y_feriado_cerrados`, `test_feriados_configurados_se_respetan` |
+| h1 · enrutar pisa un rechazado o duplicado | solo de forma indirecta (`test_diez_payloads_con_el_trabajador_real`, `test_reinicio_real_procesa_lo_pendiente`) → nuevo `test_enrutar_no_toca_rechazados_ni_duplicados` |
+| h2 · clasificar actúa sobre no pendientes | `test_repetir_la_etapa_es_idempotente` |
+| i · seguimiento de más de 500 caracteres | `test_seguimiento_nombre_largo_no_rompe_el_limite` |
+| j · el hilo del despachador muere ante una excepción | `test_excepcion_del_bucle_no_mata_el_hilo` |
+
+Tras añadir los 3 tests (`tests/test_mutaciones_5a.py`), las 21 mutaciones se detectan.
+
+### D18 · Canales de aviso
+- **[R]** Interfaz `enviar(texto, registro, presupuesto=None) -> None`, que lanza `ErrorCanal("temporal" | "permanente", código)`.
+- **[R] telegram:**
+  - `POST https://api.telegram.org/bot{token}/sendMessage` con `{chat_id, text, disable_web_page_preview: true}`, **sin `parse_mode`**;
+  - texto recortado a 4000 caracteres; timeout total de 10 s (lectura en streaming con presupuesto); sin redirecciones; `trust_env=False`;
+  - éxito: HTTP 200 y `ok == true`;
+  - temporales: 408, 429, 5xx, timeout, error de red y respuesta ilegible o de más de 64 KiB;
+  - permanentes: 400, 401, 403, 404, demás 4xx, 3xx no seguidas y 200 con `ok` distinto de `true`.
+- **[R] n8n:**
+  - `POST` JSON a `N8N_AVISOS_URL` con `{tipo, evento_id, texto, creado_at}`, y `X-Webhook-Secret` si hay `N8N_SECRETO`;
+  - timeout de 10 s; sin redirecciones; `trust_env=False`; lee como mucho 64 KiB de la respuesta;
+  - 2xx es éxito;
+  - temporales: 404 (flujo inactivo), 408, 429, 5xx, timeout y red;
+  - permanentes: 400, 401, 403, 422, demás 4xx y 3xx.
+- **[D]** El `chat_id` numérico se envía como entero y el `@canal`, como texto.
+- **[R] compuesto:** `AVISOS_CANAL` acepta una lista de {archivo, telegram, n8n} (máx. 3, sin repetidos). Se envía a todos en orden. El aviso queda `enviado` si **al menos uno** tuvo éxito; si todos fallan, el error es permanente solo si todos fueron permanentes. Un éxito parcial se registra (solo nombres de canal y tipo de resultado).
+- **[L] Éxito parcial:** con `n8n,archivo`, si n8n falla y el archivo funciona, el aviso queda `enviado` y **n8n no se reintenta**. Comprobado en la prueba final: n8n recibió dos 500 y no volvió a ver esos avisos.
+- **[L] Al menos una vez por canal:** si todos fallan y se reintenta, se reenvía a todos los canales.
+- **[R] Secretos:** el token, las URLs de webhook y el secreto nunca aparecen en logs, excepciones (`raise … from None`, códigos cortos) ni repr. Los campos de la configuración tienen `repr=False` y los canales un `repr` fijo.
+- **[D]** La lease de los avisos sube de 30 a **60 s**: hasta 3 canales por 10 s, más margen.
+- **[L]** Telegram y n8n **reales NO los probó el asistente**: solo con `MockTransport` y con un servidor de loopback que simula n8n.
+
+### D19 · Manejador central de errores
+- **[R]** La firma de `reportar_error(origen, codigo, *, evento_id, nivel)` se conserva, con dos parámetros opcionales nuevos: `clave` (agrupa la deduplicación; por defecto, el origen) y `datos` (solo contadores enteros).
+- **[R]** Tabla `incidencias`:
+  - columnas: `codigo`, `clave`, `detalle`, `ocurrencias`, `creado_at`, `ultima_at`, `estado` (pendiente / enviado / fallido), `intentos`, `proximo_intento`, `lease_hasta`, `enviado_at` y `ultimo_error` (solo el tipo);
+  - índice **UNIQUE parcial** sobre `(codigo, clave)` de las pendientes.
+- **[D] Deduplicación:** si hay una pendiente igual (aunque sea antigua) o una ya enviada dentro de `ERRORES_VENTANA_S`, se suma una ocurrencia y no se crea otra. Fuera de la ventana, se crea una nueva. Una incidencia ya enviada que sigue sumando ocurrencias dentro de la ventana no se reenvía.
+- **[R]** Nunca lanza ni bloquea: usa una conexión propia (`mode=rw`, para no crear bases vacías) con timeout de 1 s y captura todo. Si falla, solo deja una línea en el log. Sin configurar (tests, CLI), solo registra. `create_app` la configura.
+- **[R] Detalle:** solo `origen=…`, `evento=<id entero>` y contadores `nombre=<entero>`; se recorta a 200 y se sanea. Un código inválido se guarda como `codigo_invalido`.
+- **[R] Envío:** el despachador drena las incidencias por `ERRORES_CANAL` (misma sintaxis y adaptadores; por defecto, el archivo `data/errores.jsonl` con permisos 0600; para n8n, `N8N_ERRORES_URL` con `{codigo, detalle, ocurrencias, ts}`). Hasta 5 intentos, con esperas de 10 s, 60 s, 5 min y 15 min; después, fallida. **[D]** Un fallo al enviar incidencias **no** llama a `reportar_error`: así no se generan bucles.
+- **[D]** `evento_fallido` se reporta **después** del COMMIT (`reportar_error` abre su propia conexión y, si se llamara dentro de la transacción, esperaría a su propio bloqueo).
+- **[R] Catálogo final de códigos** (comprobado con grep en los llamadores):
+
+  | Origen | Códigos |
+  |---|---|
+  | `api_pacientes` | `timeout`, `error_de_red`, `error_del_servidor`, `credenciales`, `solicitud_rechazada`, `forma_inesperada`, `respuesta_inesperada`, `tiempo_agotado`, `limite_de_solicitudes`, `limite_de_uso`, `respuesta_demasiado_grande` |
+  | `llm` | los mismos, más `salida_invalida`, `rechazo_del_modelo` y `excepcion_inesperada` |
+  | `avisos` | `aviso_vencido`, `aviso_fallido` |
+  | `trabajador` | `evento_fallido` (nuevo; solo el id del evento) |
+  | `vigilancia` | `pendiente_antiguo` (nuevo) |
+  | `trabajador`, `despachador` | `hilo_caido` (nuevo; el origen es el nombre del hilo) |
+  | saneado | `codigo_invalido` |
+
+### D20 · Vigilancia interna
+- **[R]** El despachador, cada `VIGILANCIA_CADA_S` (60, de 10 a 3600) y con reloj inyectable:
+  - eventos `pendiente` más antiguos que `PENDIENTE_ANTIGUO_S` (900, de 60 a 86400) → `pendiente_antiguo`, con el conteo y la antigüedad máxima (sin ids);
+  - el trabajador no está vivo → `hilo_caido`.
+- **[D]** Un hilo no puede detectar su propia caída: **el trabajador vigila al despachador** (con la misma cadencia) y el despachador al trabajador.
+- **[R]** Los trabajos y avisos fallidos ya se reportan al ocurrir: la vigilancia no los duplica. La deduplicación la hace la ventana de incidencias.
+- **[D] Defecto encontrado en la prueba final y corregido:** el trabajador reportaba un falso `hilo_caido` del despachador al arrancar, porque se inicia antes. Lo demostré primero con un test que fallaba 3 de 3. La corrección: un hilo aún no iniciado cuenta como "desconocido" (`estado()` devuelve `None`), no como caído.
+
+### D21 · `GET /leads/resumen`
+- **[R]** `construir_resumen(con, ahora, desde)` es la **única** fuente de datos del endpoint y de la CLI. La respuesta, sin datos personales, tiene la forma documentada en `parte-a/n8n/CONTRATO.md`.
+- **[R]** `desde` en ISO 8601 **con zona** (por defecto, las últimas 24 h por `received_at`). Un valor inválido, sin zona o fuera de rango da 400, con un mensaje genérico que no repite el valor.
+- **[D] Ventanas:**
+  - eventos y rutas: `received_at >= desde`;
+  - avisos pendientes, enviados, fallidos, latencias y en plazo: `creado_at >= desde`;
+  - `pendiente_mas_antiguo_s`, `vencidos`, la alerta `aviso_fallido`, los seguimientos pendientes y las incidencias abiertas (pendientes o fallidas): **cualquier fecha**.
+- **[D] Plazo:** `en_plazo.total` solo cuenta los avisos con resultado decidido (enviados o con el plazo vencido); `cumplen` cuenta los enviados con `enviado_at <= vence_at`.
+- **[D] Hilos:** `hilos` vale `null` si el hilo no está configurado para ejecutarse (`WORKER_ACTIVO=0`, CLI); solo `false` genera la alerta `hilo_caido`.
+- **[R]** Alertas: `pendiente_antiguo`, `aviso_vencido`, `aviso_fallido`, `eventos_fallidos`, `incidencias_pendientes` y `hilo_caido`. `salud` es `"ok"` solo sin alertas.
+- **[L]** **Sin autenticación**, igual que `/leads/estado`. Los contratos de `/leads/estado` y `/salud` no cambian.
+
+### D22 · CLI (`python -m app.cli`)
+- **[R] Órdenes:**
+  - `resumen [--desde ISO] [--json]`: base en **solo lectura** (`mode=ro`); los mismos números que el endpoint;
+  - `seguimientos [--limite N]`: imprime el id del evento y el mensaje redactado, precedidos de una advertencia de datos personales;
+  - `reintentar-avisos`: devuelve los avisos fallidos a pendiente, con `intentos=0` y `proximo_intento=ahora`, e informa cuántos.
+- **[R]** No arranca hilos. La base sale de `--db` o de `DB_PATH`. Nunca crea una base vacía.
+- **[L]** La salida de `seguimientos` **contiene datos personales**: es para uso local.
+
+### Ejemplos y contrato con n8n
+- **[R]** `parte-a/n8n/CONTRATO.md` documenta los JSON exactos que el código envía (aviso y error) y la forma de `/leads/resumen`. Los archivos `parte-a/n8n/ejemplos/{aviso_caliente, novedad_duplicado, error, resumen}.json` se **generan desde el código** (`python -m app.ejemplos_n8n`) con datos ficticios, y `tests/test_contrato_n8n.py` comprueba que coinciden.
+
+### Configuración
+- **[R]** Variables nuevas, validadas al arrancar sin mostrar valores y documentadas en `.env.example`:
+
+  | Variable | Validación | Defecto |
+  |---|---|---|
+  | `AVISOS_CANAL`, `ERRORES_CANAL` | lista de {archivo, telegram, n8n}, máx. 3, sin repetidos | archivo |
+  | `TELEGRAM_BOT_TOKEN` | 20-200 caracteres `[A-Za-z0-9:_-]`, porque va en la URL | — |
+  | `TELEGRAM_CHAT_ID` | `-?\d{1,20}` o `@[A-Za-z0-9_]{5,32}` | — |
+  | `N8N_AVISOS_URL`, `N8N_ERRORES_URL` | http(s), con host, sin credenciales embebidas | — |
+  | `N8N_SECRETO` | opcional, sin espacios | — |
+  | `ERRORES_ARCHIVO` | ruta | `data/errores.jsonl` |
+  | `ERRORES_VENTANA_S` | 60-86400 | 900 |
+  | `PENDIENTE_ANTIGUO_S` | 60-86400 | 900 |
+  | `VIGILANCIA_CADA_S` | 10-3600 | 60 |
+
+- **[R]** Un canal elegido sin su configuración impide arrancar, con un mensaje sin valores. Al arrancar se registra un aviso único con los canales activos (solo nombres).
+
+### Limitaciones de 5b y 5c
+- **[L] Entrega:** "al menos una vez" por canal, y con el canal compuesto un éxito parcial no reintenta los canales que fallaron.
+- **[L] Canales reales:** Telegram y n8n reales **no los probó el asistente**.
+- **[L] Resumen:** sin autenticación.
+- **[L] CLI:** `seguimientos` muestra datos personales.
+- **[L] Seguimientos:** **no se envían**; solo se redactan y se consultan (CLI y base).
+- **[L] Mutación e2:** se detecta porque la suite se cuelga, no por una aserción.
+

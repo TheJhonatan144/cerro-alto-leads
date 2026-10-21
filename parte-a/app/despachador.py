@@ -11,13 +11,14 @@ errores. Agotados los intentos, el aviso queda 'fallido'.
 """
 import json
 import logging
-import os
 import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import agenda, config, db, plantillas
+from app import agenda, config, db, plantillas, vigilancia
+# Los adaptadores viven en app/canales.py; se reexportan aquí por compatibilidad.
+from app.canales import CanalArchivo, ErrorCanal, crear_canal  # noqa: F401
 from app.errores import reportar_error
 from app.pacientes import Presupuesto
 
@@ -27,10 +28,14 @@ ESPERAS_REINTENTO_S = (5, 15, 45, 90)
 ESPERA_MAXIMA_S = 120
 MAX_INTENTOS = 10
 PRESUPUESTO_ENVIO_S = 10.0
-LEASE_S = 30  # mayor que el presupuesto de envío
+LEASE_S = 60  # mayor que el envío por hasta 3 canales (3 x 10 s) más margen
 INTERVALO_S = 1.0
 ESPERA_TRAS_ERROR_S = 1.0
 TIPOS = ("lead_caliente", "novedad_duplicado")
+# Incidencias del canal de errores (D19): 10 s, 1 min, 5 min y 15 min; después, fallida.
+ESPERAS_INCIDENCIA_S = (10, 60, 300, 900)
+MAX_INTENTOS_INCIDENCIA = 5
+_TABLAS_COLA = ("avisos", "incidencias")
 
 
 def _txt(momento: datetime) -> str:
@@ -59,53 +64,6 @@ def crear_aviso(con, evento_id: int, tipo: str, recibido_at: str, cfg: config.Co
         (evento_id, tipo, cfg.avisos_canal, _txt(ahora), _txt(vence), _txt(ahora)),
     )
     return cur.rowcount == 1
-
-
-# --- Adaptadores de canal ---------------------------------------------------------------------
-
-class ErrorCanal(Exception):
-    """Fallo al enviar. tipo: 'temporal' (se reintenta) o 'permanente' (fallido directo).
-    codigo: texto corto sin datos personales."""
-
-    def __init__(self, tipo: str, codigo: str):
-        if tipo not in ("temporal", "permanente"):
-            raise ValueError("tipo de ErrorCanal inválido")
-        super().__init__(codigo)
-        self.tipo, self.codigo = tipo, codigo
-
-
-class CanalArchivo:
-    """Una línea JSON por aviso. El archivo contiene datos personales: permisos 0600 y debe
-    estar fuera del control de versiones (data/ está en .gitignore)."""
-    nombre = "archivo"
-
-    def __init__(self, ruta: Path):
-        self.ruta = Path(ruta)
-
-    def enviar(self, texto: str, aviso, presupuesto: Presupuesto | None = None) -> None:
-        linea = json.dumps({"aviso_id": aviso["id"], "evento_id": aviso["evento_id"],
-                            "tipo": aviso["tipo"], "enviado_at": db.ahora_utc(), "texto": texto},
-                           ensure_ascii=False) + "\n"
-        try:
-            self.ruta.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.ruta, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            try:
-                os.fchmod(fd, 0o600)  # también si el archivo ya existía con otros permisos
-                os.write(fd, linea.encode("utf-8"))
-            finally:
-                os.close(fd)
-        except OSError:
-            raise ErrorCanal("temporal", "archivo_no_escribible") from None
-
-
-# Registro de adaptadores: nombre de AVISOS_CANAL -> fábrica. El Bloque 5b añade telegram y n8n.
-ADAPTADORES: dict[str, Callable[[config.Config], object]] = {
-    "archivo": lambda cfg: CanalArchivo(cfg.avisos_archivo),
-}
-
-
-def crear_canal(cfg: config.Config):
-    return ADAPTADORES[cfg.avisos_canal](cfg)
 
 
 # --- Renderizado (desde la base, en el momento del envío) -----------------------------------------
@@ -146,26 +104,36 @@ def renderizar(con, aviso) -> str:
 
 # --- Cola ------------------------------------------------------------------------------------------
 
-def reclamar_aviso(con, ahora: datetime):
-    """Toma el aviso pendiente más antiguo ya vencido y sin reserva vigente; suma un intento."""
+def _reclamar(con, tabla: str, ahora: datetime):
+    """Toma la fila pendiente más antigua ya vencida y sin reserva vigente; suma un intento."""
+    if tabla not in _TABLAS_COLA:
+        raise ValueError("tabla de cola desconocida")
     t = _txt(ahora)
     con.execute("BEGIN IMMEDIATE")
     try:
         fila = con.execute(
-            """SELECT id FROM avisos
-               WHERE estado = 'pendiente' AND proximo_intento <= ?
-                 AND (lease_hasta IS NULL OR lease_hasta < ?)
-               ORDER BY id LIMIT 1""", (t, t)).fetchone()
+            f"""SELECT id FROM {tabla}
+                WHERE estado = 'pendiente' AND proximo_intento <= ?
+                  AND (lease_hasta IS NULL OR lease_hasta < ?)
+                ORDER BY id LIMIT 1""", (t, t)).fetchone()
         if fila is not None:
-            con.execute("UPDATE avisos SET lease_hasta = ?, intentos = intentos + 1 WHERE id = ?",
+            con.execute(f"UPDATE {tabla} SET lease_hasta = ?, intentos = intentos + 1 WHERE id = ?",
                         (_txt(ahora + timedelta(seconds=LEASE_S)), fila["id"]))
-            fila = con.execute("SELECT * FROM avisos WHERE id = ?", (fila["id"],)).fetchone()
+            fila = con.execute(f"SELECT * FROM {tabla} WHERE id = ?", (fila["id"],)).fetchone()
         con.execute("COMMIT")
     except BaseException:
         if con.in_transaction:
             con.execute("ROLLBACK")
         raise
     return fila
+
+
+def reclamar_aviso(con, ahora: datetime):
+    return _reclamar(con, "avisos", ahora)
+
+
+def reclamar_incidencia(con, ahora: datetime):
+    return _reclamar(con, "incidencias", ahora)
 
 
 def revisar_vencidos(con, ahora: datetime) -> int:
@@ -223,9 +191,58 @@ def enviar_aviso(con, aviso, canal, reloj: Callable[[], datetime] = _ahora) -> s
     return "enviado"
 
 
-def despachar_pendientes(db_path: Path, canal, ahora=None, parar: threading.Event | None = None) -> int:
-    """Envía todo lo reclamable ahora. 'ahora': instante fijo, reloj (callable) o None."""
-    reloj = ahora if callable(ahora) else ((lambda: ahora) if ahora is not None else (lambda: _ahora()))
+def _fallo_incidencia(con, inc, codigo: str, permanente: bool, momento: datetime) -> str:
+    """Nunca llama a reportar_error: un fallo del canal de errores no genera otra incidencia."""
+    dueno = (inc["id"], inc["intentos"])
+    if permanente or inc["intentos"] >= MAX_INTENTOS_INCIDENCIA:
+        con.execute(f"UPDATE incidencias SET estado = 'fallido', lease_hasta = NULL, ultimo_error = ? "
+                    f"WHERE {_ES_DUENO}", (codigo, *dueno))
+        log.error("incidencia=%s codigo=%s no se pudo enviar: fallida", inc["id"], inc["codigo"])
+        return "fallido"
+    espera = ESPERAS_INCIDENCIA_S[min(inc["intentos"], len(ESPERAS_INCIDENCIA_S)) - 1]
+    con.execute(f"UPDATE incidencias SET lease_hasta = NULL, proximo_intento = ?, ultimo_error = ? "
+                f"WHERE {_ES_DUENO}", (_txt(momento + timedelta(seconds=espera)), codigo, *dueno))
+    log.warning("incidencia=%s intento=%s fallo=%s", inc["id"], inc["intentos"], codigo)
+    return "pendiente"
+
+
+def enviar_incidencia(con, inc, canal, reloj: Callable[[], datetime] = _ahora) -> str:
+    try:
+        canal.enviar(plantillas.incidencia(dict(inc)), inc, Presupuesto(PRESUPUESTO_ENVIO_S))
+    except ErrorCanal as e:
+        return _fallo_incidencia(con, inc, e.codigo, e.tipo == "permanente", reloj())
+    except Exception as e:
+        return _fallo_incidencia(con, inc, type(e).__name__, False, reloj())
+    con.execute(f"UPDATE incidencias SET estado = 'enviado', enviado_at = ?, lease_hasta = NULL WHERE {_ES_DUENO}",
+                (_txt(reloj()), inc["id"], inc["intentos"]))
+    return "enviado"
+
+
+def _reloj(ahora) -> Callable[[], datetime]:
+    return ahora if callable(ahora) else ((lambda: ahora) if ahora is not None else (lambda: _ahora()))
+
+
+def despachar_incidencias(db_path: Path, canal, ahora=None, parar: threading.Event | None = None) -> int:
+    reloj = _reloj(ahora)
+    con = db.conectar(db_path)
+    try:
+        enviadas = 0
+        while parar is None or not parar.is_set():
+            inc = reclamar_incidencia(con, reloj())
+            if inc is None:
+                break
+            enviar_incidencia(con, inc, canal, reloj)
+            enviadas += 1
+        return enviadas
+    finally:
+        con.close()
+
+
+def despachar_pendientes(db_path: Path, canal, ahora=None, parar: threading.Event | None = None,
+                         canal_errores=None) -> int:
+    """Envía todo lo reclamable ahora (avisos y, si hay canal de errores, incidencias).
+    'ahora': instante fijo, reloj (callable) o None."""
+    reloj = _reloj(ahora)
     con = db.conectar(db_path)
     try:
         enviados = 0
@@ -237,17 +254,23 @@ def despachar_pendientes(db_path: Path, canal, ahora=None, parar: threading.Even
                 break
             enviar_aviso(con, aviso, canal, reloj)
             enviados += 1
-        return enviados
     finally:
         con.close()
+    if canal_errores is not None:
+        despachar_incidencias(db_path, canal_errores, reloj, parar)
+    return enviados
 
 
 class Despachador:
     """Hilo demonio que vacía la bandeja de avisos cada INTERVALO_S (como el Trabajador)."""
 
     def __init__(self, db_path: Path, canal, reloj: Callable[[], datetime] | None = None,
-                 intervalo_s: float = INTERVALO_S):
+                 intervalo_s: float = INTERVALO_S, canal_errores=None, cfg: config.Config | None = None,
+                 hilos: Callable[[], dict] | None = None):
         self.db_path, self.canal, self.reloj, self.intervalo_s = db_path, canal, reloj, intervalo_s
+        self.canal_errores = canal_errores
+        self.cfg, self.hilos = cfg, hilos  # vigilancia interna (D20); sin cfg no se vigila
+        self._ultima_vigilancia: datetime | None = None
         self._parar = threading.Event()
         self._hilo: threading.Thread | None = None
 
@@ -259,6 +282,10 @@ class Despachador:
     def vivo(self) -> bool:
         return self._hilo is not None and self._hilo.is_alive()
 
+    def estado(self) -> bool | None:
+        """None si aún no se inició (desconocido, no caído); si no, si sigue vivo."""
+        return None if self._hilo is None else self._hilo.is_alive()
+
     def detener(self, timeout: float = 30) -> bool:
         self._parar.set()
         if self._hilo is not None:
@@ -269,10 +296,26 @@ class Despachador:
         log.info("despachador detenido")
         return True
 
+    def _tal_vez_vigilar(self, momento: datetime) -> bool:
+        """Ejecuta la vigilancia si pasaron VIGILANCIA_CADA_S desde la última."""
+        if self.cfg is None:
+            return False
+        if self._ultima_vigilancia is not None and \
+                (momento - self._ultima_vigilancia).total_seconds() < self.cfg.vigilancia_cada_s:
+            return False
+        self._ultima_vigilancia = momento
+        con = db.conectar(self.db_path)
+        try:
+            vigilancia.vigilar(con, momento, self.cfg, self.hilos() if self.hilos else None)
+        finally:
+            con.close()
+        return True
+
     def _bucle(self) -> None:
         while not self._parar.is_set():
             try:  # ningún error mata el hilo
-                despachar_pendientes(self.db_path, self.canal, self.reloj, self._parar)
+                despachar_pendientes(self.db_path, self.canal, self.reloj, self._parar, self.canal_errores)
+                self._tal_vez_vigilar(self.reloj() if self.reloj else _ahora())
                 self._parar.wait(self.intervalo_s)
             except Exception as e:
                 log.error("error en el bucle del despachador: %s", type(e).__name__)

@@ -6,13 +6,14 @@ para poder probar el tiempo sin esperas reales.
 """
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import config, db, enriquecimiento, etapa_clasificar, etapa_enrutar, procesador
-from app.errores import MAX_REPROGRAMACIONES, Reprogramar
+from app import config, db, enriquecimiento, etapa_clasificar, etapa_enrutar, procesador, vigilancia
+from app.errores import MAX_REPROGRAMACIONES, Reprogramar, reportar_error
 from app.llm import ClienteLLM, Prompt, cargar_prompt
 from app.pacientes import ClientePacientes
 
@@ -136,6 +137,8 @@ def recuperar_expirados(con, ahora: datetime) -> int:
         if con.in_transaction:
             con.execute("ROLLBACK")
         raise
+    for trabajo in agotados:
+        reportar_error("trabajador", "evento_fallido", evento_id=trabajo["evento_id"], nivel=logging.ERROR)
     if cur.rowcount or agotados:
         log.warning("trabajos con lease vencida: %d recuperados, %d fallidos",
                     cur.rowcount, len(agotados))
@@ -185,6 +188,8 @@ def _registrar_fallo(con, trabajo, tipo_error: str, ahora: datetime) -> str:
         if con.in_transaction:
             con.execute("ROLLBACK")
         raise
+    if resultado == "fallido":  # tras el COMMIT: reportar_error abre su propia conexión
+        reportar_error("trabajador", "evento_fallido", evento_id=trabajo["evento_id"], nivel=logging.ERROR)
     return resultado
 
 
@@ -313,9 +318,12 @@ def procesar_pendientes(db_path: Path, ahora=None,
 class Trabajador:
     """Hilo demonio único que vacía la cola y espera WORKER_INTERVALO_S cuando no hay trabajo."""
 
-    def __init__(self, db_path: Path, cfg: config.Config, ctx: Contexto | None = None):
+    def __init__(self, db_path: Path, cfg: config.Config, ctx: Contexto | None = None,
+                 hilos: Callable[[], dict] | None = None):
         self.db_path = db_path
         self.cfg = cfg
+        self.hilos = hilos  # D20: el trabajador vigila al despachador (y viceversa)
+        self._ultima_vigilancia = None
         self.ctx = ctx or crear_contexto(cfg)  # un cliente y un limitador por proceso
         self._parar = threading.Event()
         self._hilo: threading.Thread | None = None
@@ -327,6 +335,10 @@ class Trabajador:
 
     def vivo(self) -> bool:
         return self._hilo is not None and self._hilo.is_alive()
+
+    def estado(self) -> bool | None:
+        """None si aún no se inició (desconocido, no caído); si no, si sigue vivo."""
+        return None if self._hilo is None else self._hilo.is_alive()
 
     def detener(self, timeout: float = 30) -> bool:
         """Pide parar y espera hasta 'timeout' s. True si el hilo terminó."""
@@ -341,9 +353,19 @@ class Trabajador:
         log.info("trabajador detenido")
         return True
 
+    def _tal_vez_vigilar_hilos(self) -> None:
+        if self.hilos is None:
+            return
+        ahora = time.monotonic()
+        if self._ultima_vigilancia is not None and ahora - self._ultima_vigilancia < self.cfg.vigilancia_cada_s:
+            return
+        self._ultima_vigilancia = ahora
+        vigilancia.revisar_hilos(self.hilos())
+
     def _bucle(self) -> None:
         while not self._parar.is_set():
             try:  # la espera también va dentro: ningún error mata el hilo
+                self._tal_vez_vigilar_hilos()
                 if procesar_pendientes(self.db_path, parar=self._parar, ctx=self.ctx) == 0:
                     self._parar.wait(self.cfg.worker_intervalo_s)
             except Exception as e:

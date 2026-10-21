@@ -1,0 +1,153 @@
+{
+  "name": "Cerro Alto - Errores",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cerro-alto-errores",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -320,
+        96
+      ],
+      "id": "dee53ba2-8c79-4b07-b4f6-9ed5c851e1fc",
+      "name": "Webhook",
+      "webhookId": "7dff3e3f-a8a7-4fd1-b557-c9fe69f32698",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "f01HPUqP4CUtYoiM",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": true }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        352,
+        96
+      ],
+      "id": "b85a3ba5-a073-41e6-8840-0350a8764c2b",
+      "name": "Responder 200"
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=🚨 ERROR: {{ $json.body.codigo }} (x{{ $json.body.ocurrencias }})\n{{ String($json.body.detalle).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }}\n{{ $json.body.ts }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        96
+      ],
+      "id": "68e9064e-5bbb-49a9-8ebc-4b30f0d79f08",
+      "name": "Telegram error",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        80,
+        304
+      ],
+      "id": "fd7bf6e8-44fb-457c-93ad-25ed9b09db59",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=⚠️ FALLO EN UN FLUJO DE N8N\nFlujo: {{ String($json.workflow.name).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }}\nNodo: {{ String($json.execution.lastNodeExecuted).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }}\nError: {{ String($json.execution.error.message).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        320,
+        304
+      ],
+      "id": "4636af96-d434-48e0-bccb-9083cea220ac",
+      "name": "Telegram fallo n8n",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Telegram error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram error": {
+      "main": [
+        [
+          {
+            "node": "Responder 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Telegram fallo n8n",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "bc68148d-ede1-4468-be49-046b1ff96a2e",
+  "meta": {
+    "instanceId": "d54924c245dc70747848cb601a7db4a53cb2336a683dfc1625ff3340a5ae292d"
+  },
+  "nodeGroups": [],
+  "id": "EirSngbQpBgmZZw2",
+  "tags": []
+}

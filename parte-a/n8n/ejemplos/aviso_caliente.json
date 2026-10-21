@@ -1,0 +1,6 @@
+{
+  "tipo": "lead_caliente",
+  "evento_id": 101,
+  "texto": "Lead caliente - Clínica Dental Cerro Alto\nNombre: Ana Ejemplo\nContacto: +593990000000\nServicio de interés: Limpieza\nRuta: caliente. Motivo: Caliente por reglas: pide agendar o que lo llamen\nPaciente: no\nCita tentativa 1: Limpieza dental, sede Norte, lunes 2 de noviembre, 12:00 a 13:00 (hora de Ecuador), USD 45. Nota: tentativa, pendiente de confirmar disponibilidad real\nCita tentativa 2: Limpieza dental, sede Norte, martes 3 de noviembre, 08:00 a 09:00 (hora de Ecuador), USD 45. Nota: tentativa, pendiente de confirmar disponibilidad real\nEvento: evt_ejemplo_001 - Lead: 00000000-0000-4000-8000-000000000001 - Recibido: 2026-11-02T14:58:10.123456Z",
+  "creado_at": "2026-11-02T14:58:11.000000Z"
+}

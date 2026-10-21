@@ -1,0 +1,257 @@
+{
+  "name": "Cerro Alto - Avisos",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cerro-alto-avisos",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "49f41347-5372-41ed-acc0-7f44b2389d6b",
+      "name": "Webhook",
+      "webhookId": "7dff3e3f-a8a7-4fd1-b557-c9fe69f32698",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "f01HPUqP4CUtYoiM",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.tipo }}",
+                    "rightValue": "lead_caliente",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "3ae6cd61-5633-4b34-ad42-5ed2968094f2"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "caliente"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "ef92f10d-d44b-4c99-a59c-148884b0b7ca",
+                    "leftValue": "={{ $json.body.tipo }}",
+                    "rightValue": "novedad_duplicado",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "duplicado"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        0
+      ],
+      "id": "a87267f9-7671-4701-980a-ef9092334d43",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=   🔥 LEAD CALIENTE\n   {{ String($json.body.texto).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        576,
+        -192
+      ],
+      "id": "0551d12f-a17f-456b-bd72-0f5302d676d0",
+      "name": "Telegram caliente",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "REEMPLAZAR_CHAT_ID",
+        "text": "=   ℹ️ NOVEDAD EN LEAD DUPLICADO\n   {{ String($json.body.texto).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        576,
+        0
+      ],
+      "id": "1dfe6add-8b4a-431f-ade9-38cafe5a39ad",
+      "name": "Telegram duplicado",
+      "webhookId": "8649d9ad-4cf6-4c52-a580-3e4a690d2a17",
+      "credentials": {
+        "telegramApi": {
+          "id": "fAFNbvtXIj27FBor",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": true }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        832,
+        -112
+      ],
+      "id": "93b326ff-427e-4946-9370-a389173d5b6e",
+      "name": "Responder 200"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{ \"ok\": false, \"error\": \"tipo_desconocido\" }",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        576,
+        208
+      ],
+      "id": "bee6f48f-11e3-44ec-a0a5-9556962aa58a",
+      "name": "Responder 400"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Telegram caliente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram duplicado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram caliente": {
+      "main": [
+        [
+          {
+            "node": "Responder 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram duplicado": {
+      "main": [
+        [
+          {
+            "node": "Responder 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "EirSngbQpBgmZZw2",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "668cfa20-d3ba-4525-814e-aa1fe90d6b76",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d54924c245dc70747848cb601a7db4a53cb2336a683dfc1625ff3340a5ae292d"
+  },
+  "nodeGroups": [],
+  "id": "cHNl5ewkFahB3dnB",
+  "tags": []
+}

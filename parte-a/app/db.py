@@ -175,6 +175,28 @@ CREATE TABLE IF NOT EXISTS avisos (
 );
 CREATE INDEX IF NOT EXISTS idx_avisos_cola ON avisos(estado, proximo_intento);
 
+-- Bandeja de incidencias del manejador central de errores (D19). Solo códigos, contadores e
+-- ids de evento: nunca texto libre. Una sola pendiente por (codigo, clave).
+CREATE TABLE IF NOT EXISTS incidencias (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo          TEXT NOT NULL CHECK (length(codigo) BETWEEN 1 AND 40),
+    clave           TEXT NOT NULL DEFAULT '' CHECK (length(clave) <= 40),
+    detalle         TEXT NOT NULL DEFAULT '' CHECK (length(detalle) <= 200),
+    ocurrencias     INTEGER NOT NULL DEFAULT 1 CHECK (ocurrencias >= 1),
+    creado_at       TEXT NOT NULL,
+    ultima_at       TEXT NOT NULL,
+    estado          TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'enviado', 'fallido')),
+    intentos        INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0),
+    proximo_intento TEXT NOT NULL,
+    lease_hasta     TEXT,
+    enviado_at      TEXT,
+    ultimo_error    TEXT,  -- solo el tipo de error
+    CHECK ((estado = 'enviado') = (enviado_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_incidencias_pendiente_unica ON incidencias(codigo, clave)
+    WHERE estado = 'pendiente';
+CREATE INDEX IF NOT EXISTS idx_incidencias_cola ON incidencias(estado, proximo_intento);
+
 -- Primer mensaje de seguimiento para los tibios (lo envía recepción; Bloque 5b).
 CREATE TABLE IF NOT EXISTS seguimientos (
     evento_id INTEGER PRIMARY KEY REFERENCES eventos(id),
