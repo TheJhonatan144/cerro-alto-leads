@@ -1,0 +1,15 @@
+{
+  "descripcion": "Estado y ruta esperados de cada payload con LLM_PROVIDER=none, enviados en orden a una base vacía. Derivado de test_etapa_clasificar.py::test_diez_payloads_con_provider_none y test_trabajador.py::test_diez_payloads_con_el_trabajador_real; lo comprueba tests/test_verificar_payloads.py. evento_02 repite el event_id de evento_01, así que su estado es el del 01.",
+  "archivos": {
+    "evento_01.json": {"estado": "procesado", "ruta": "caliente"},
+    "evento_02.json": {"estado": "procesado", "ruta": "caliente"},
+    "evento_03.json": {"estado": "duplicado", "ruta": null},
+    "evento_04.json": {"estado": "procesado", "ruta": "tibio"},
+    "evento_05.json": {"estado": "procesado", "ruta": "tibio"},
+    "evento_06.json": {"estado": "procesado", "ruta": "tibio"},
+    "evento_07.json": {"estado": "procesado", "ruta": "caliente"},
+    "evento_08.json": {"estado": "procesado", "ruta": "basura"},
+    "evento_09.json": {"estado": "procesado", "ruta": "tibio"},
+    "evento_10.json": {"estado": "procesado", "ruta": "tibio"}
+  }
+}

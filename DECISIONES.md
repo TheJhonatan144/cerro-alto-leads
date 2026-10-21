@@ -223,7 +223,7 @@ Estas decisiones estaban **aprobadas, pendientes de implementar en el Bloque 3**
   - *Error Trigger* = manejador central de errores del trabajador (registro del tipo de error, `ultimo_error`, paso a `fallido`).
   - *Wait* y reintentos = espera entre reintentos del trabajador (30 s, 2 min, 10 min, 30 min; máximo 5).
   - *IF / Switch* = enrutado por temperatura (bloque de clasificación).
-- **Estado:** previsto para el Bloque 5; todavía no hay flujos de n8n en el repositorio ni se ha ejecutado ninguno. Cuando se incluyan, esta línea pasará a: "flujos de n8n incluidos como opción, probados por el autor, no requeridos" (solo después de haberlos ejecutado).
+- **Estado (actualizado en el Bloque 6):** flujos de n8n incluidos como opción, probados por el autor, no requeridos. *(Antes: "previsto para el Bloque 5".)*
 
 ## Bloque 3 · Enriquecimiento con la API de pacientes
 
@@ -860,3 +860,187 @@ Tras añadir los 3 tests (`tests/test_mutaciones_5a.py`), las 21 mutaciones se d
 - **[L] Seguimientos:** **no se envían**; solo se redactan y se consultan (CLI y base).
 - **[L] Mutación e2:** se detecta porque la suite se cuelga, no por una aserción.
 
+
+## Bloque 6 · Cierre de la Parte A
+
+Implementado en:
+- `app/cli.py` (órdenes `listar-fallidos` y `reprocesar`);
+- `parte-a/scripts/verificar_payloads.py` y `parte-a/tests/esperado_payloads.json`;
+- `parte-a/scripts/prueba_humo_real.py`;
+- `README.md` (raíz) y `USO_IA.md`.
+
+Tests nuevos: `tests/test_reproceso.py` (15), `tests/test_verificar_payloads.py` (7) y
+`tests/test_prueba_humo_real.py` (14). El esquema de la base **no** cambió.
+
+### 6.1 · Reproceso de eventos fallidos
+- **[R]** `listar-fallidos`: base en solo lectura. Muestra `event_id` (o el id interno si no lo
+  tiene), la última etapa completada, los intentos y el tipo del último error. Nunca muestra
+  datos personales.
+- **[R]** `reprocesar (--event-id X | --todos) [--dry-run]`, todo en **una** transacción
+  `BEGIN IMMEDIATE`:
+  - evento `fallido` → `pendiente`, con `motivo = NULL` (el CHECK exige `ruta` nula fuera de
+    `procesado`);
+  - trabajo → `pendiente`, `intentos = 0`, `reprogramaciones = 0`, `lease_hasta = NULL`,
+    `ultimo_error = NULL`, `proximo_intento_at = ahora`;
+  - si falta el trabajo, se crea (`INSERT … ON CONFLICT(evento_id, tipo) DO UPDATE`).
+- **[D]** El trabajo **conserva su etapa** y se reanuda tras la última completada. Las etapas
+  son idempotentes (`ON CONFLICT` en avisos, seguimientos y citas), así que repetirlas no
+  duplica nada.
+- **[D]** Un trabajo `en_curso` con lease **vigente** pertenece a un trabajador vivo: se omite
+  y se informa. Con la lease vencida, sí se reprocesa.
+- **[D]** Un `event_id` inexistente sale con código 1 y el mensaje no repite el valor. Un
+  evento que existe pero no está fallido informa de su estado y no cambia nada (código 0), para
+  que repetir la orden sea inocuo.
+- **[D]** `--dry-run` abre la base en solo lectura (`mode=ro`): es imposible que escriba.
+- **[R] Comprobado:**
+  - un evento forzado a `fallido` (5 intentos agotados en `clasificar_lead`) se recupera y
+    queda `procesado` con **un único** aviso enviado;
+  - dos y tres ejecuciones seguidas no duplican avisos, citas, seguimientos ni trabajos;
+  - `--dry-run` deja la base idéntica (volcado completo antes y después);
+  - un `event_id` inexistente;
+  - lease vigente y lease vencida;
+  - evento sin trabajo;
+  - atomicidad (un disparador rompe el segundo evento y el primero tampoco cambia);
+  - con el servidor corriendo (WAL, hilos activos), el evento termina `procesado` y su aviso
+    queda en el archivo.
+- **[R] Mutaciones** (en una copia temporal): "sin transacción" (8 tests fallan), "no respetar
+  la lease" (1) y "no poner los intentos a 0" (1). Las tres se detectan.
+- **[L] `--reenriquecer` no se implementó.** Volver a consultar la API para un lead
+  `no_disponible` ya enrutado cambiaría el enriquecimiento después de decidir la ruta (y el
+  aviso ya enviado). Hacerlo bien exige reclasificar y, quizá, crear un aviso nuevo para un
+  lead ya atendido. No es de bajo riesgo: queda fuera.
+- **[L]** Al reprocesar un caliente tarde, su aviso nace con `vence_at` en el pasado (el plazo
+  cuenta desde la recepción) y generará la incidencia `aviso_vencido`. Es correcto: el plazo
+  real se incumplió.
+- **[L]** Si un evento falló en `normalizar_y_duplicados` y se reprocesa después de que
+  llegaran otros eventos de la misma persona, esos eventos posteriores ya no lo verán como
+  original (misma limitación que en el Bloque 2b).
+
+### 6.2 · Verificación de los payloads
+- **[R]** `scripts/verificar_payloads.py`, solo con la biblioteca estándar (un test lo
+  comprueba con `ast`). Envía en orden, consulta `/leads/estado` hasta que el evento deje de
+  estar `pendiente` (60 s por evento) y compara con `tests/esperado_payloads.json`. Sale con 1 si
+  algo no coincide o falla. Imprime solo archivo, estado y ruta.
+- **[D]** El script no usa los proxies del entorno, y un 404 o 503 de `/leads/estado` se
+  reintenta hasta el plazo.
+- **[R]** `esperado_payloads.json` sale de los tests existentes con `LLM_PROVIDER=none`, y un
+  test nuevo lo compara con el procesamiento real. El script se prueba contra un uvicorn real
+  en loopback: coincide 10/10, repetirlo da lo mismo, un esperado alterado sale con 1 y sin
+  servidor también sale con 1.
+
+### 6.3 · Prueba de humo con servicios reales
+- **[R]** `scripts/prueba_humo_real.py` usa `ClientePacientes` y `ClienteLLM` con un
+  transporte que **cuenta y corta** las peticiones: como mucho 3 a la API de pacientes (en la
+  práctica 2: búsqueda y, solo con un paciente único, tratamientos) y 1 al LLM.
+- **[D]** Llama a `ClientePacientes.get` y a `ClienteLLM._post` directamente, para evitar el
+  reintento corto y la paginación: así cada operación es exactamente una petición. La salida
+  del LLM se pasa después por `validar_salida_llm` y `decidir_ruta`, como en la etapa real.
+- **[R]** Imprime solo códigos HTTP, nombres de claves, el número de elementos, si el
+  validador aceptó la salida y la ruta. Los tests (solo con dobles) comprueban que no aparecen
+  el token, la clave, la URL, el id del paciente ni ningún valor del JSON.
+- **[L]** **No lo ejecutó el asistente** contra servicios reales: lo ejecuta el autor.
+
+### 6.4 · Estado de los flujos de n8n
+- La decisión transversal "Núcleo en código + n8n opcional" queda así: **flujos de n8n
+  incluidos como opción, probados por el autor, no requeridos**. El asistente solo los probó
+  con dobles (contrato y servidor de loopback).
+
+### Anticipado en la Fase 1 → construido
+
+Las 10 fallas anticipadas en `FALLAS_EnvioFinal.md` (documento de la Fase 1).
+
+**[PENDIENTE] `FALLAS_EnvioFinal.md` no está en el repositorio ni en la máquina de trabajo.
+El asistente no tuvo acceso al documento, así que no rellenó la tabla para no inventar las
+fallas.** Leyenda: ✅ construido y probado · 🟡 parcial · ⛔ fuera de alcance.
+
+| # | Falla anticipada (Fase 1) | Estado | Dónde se resolvió |
+|---|---|---|---|
+| 1 | [COMPLETAR] | | |
+| 2 | [COMPLETAR] | | |
+| 3 | [COMPLETAR] | | |
+| 4 | [COMPLETAR] | | |
+| 5 | [COMPLETAR] | | |
+| 6 | [COMPLETAR] | | |
+| 7 | [COMPLETAR] | | |
+| 8 | [COMPLETAR] | | |
+| 9 | [COMPLETAR] | | |
+| 10 | [COMPLETAR] | | |
+
+### Limitaciones conocidas y lo que dejé fuera
+
+**Seguridad y privacidad**
+- El webhook no tiene autenticación: el contrato del conector no prevé firma ni secreto
+  ("Fase 1 frente a lo construido").
+- `/leads/estado` (con teléfono y correo, porque el contrato los pide) y `/leads/resumen` no
+  tienen autenticación. Solo para `127.0.0.1` o detrás de un proxy (D21).
+- El cuerpo crudo de cada evento y de cada repetición guarda datos personales sin política de
+  retención ni borrado (Bloque 1).
+- `avisos.jsonl` y la salida de `cli seguimientos` contienen datos personales (permisos 0600;
+  uso local) (D18, D22).
+
+**Procesamiento**
+- Un lead `no_disponible` no se vuelve a enriquecer, y no hay `--reenriquecer` (D5 y 6.1).
+- La detección de duplicados depende del orden de llegada. Un evento reprocesado tarde no se
+  compara con eventos posteriores (Bloque 2b y 6.1).
+- `mismo_contenido` compara bytes crudos: el mismo JSON con otro espaciado cuenta como
+  contenido distinto (Bloque 1).
+- Un `event_id` inválido o ausente pierde la idempotencia por `event_id` (Bloque 1).
+- Tipo de tratamiento de la API con minimización parcial ("Diferido tras la revisión del
+  Bloque 3").
+- Cabeceras HTTP lentas (API de pacientes y LLM): el presupuesto no se comprueba mientras
+  llegan. Riesgo aceptado (Bloque 3.2).
+- Un solo proceso: el trabajador y el despachador son hilos del proceso de uvicorn. No se probó
+  con varios procesos ni varias máquinas.
+
+**Avisos**
+- Entrega "al menos una vez", por notificador. Si un notificador acepta y otro falla, el que
+  falló no se reintenta (D18).
+- Los seguimientos de los tibios se redactan pero **no se envían** (5b/5c).
+- La cita tentativa sale de las reglas de la ficha, no de una agenda real (D12).
+- Un caliente reprocesado tarde tiene su aviso ya vencido (6.1).
+
+**Lo que no probó el asistente con servicios reales**
+- La API de pacientes, los proveedores de LLM (formato de petición y respuesta), Telegram y
+  n8n: solo con dobles. Contra los servicios reales, los probó el autor (`prueba_humo_real.py`
+  y los flujos de n8n).
+
+**Fuera de alcance, a propósito**
+- Redis, microservicios, colas externas y ORM ("Núcleo en código + n8n opcional").
+- Un panel web. La operación se hace con `/leads/resumen`, la CLI y los flujos de n8n.
+- Migraciones de esquema: un cambio de esquema exige borrar `data/leads.db*` (5b).
+
+### Tiempo real invertido
+
+**[COMPLETAR POR EL AUTOR]** Horas reales: total y desglose por bloque (ver también
+`USO_IA.md`).
+
+### Credenciales: token revocado
+
+**[COMPLETAR POR EL AUTOR]** Si alguna credencial (token de la API de pacientes, clave del LLM o
+token del bot de Telegram) llegó a estar expuesta: cuál era (solo el tipo, nunca el valor),
+cuándo se revocó y si se generó una nueva. Si no hubo ninguna, indicarlo. El resultado del
+escaneo de secretos del Bloque 6.6 está más abajo.
+
+### 6.5 · Simulación del evaluador
+- **[R]** Copia de `git ls-files -co --exclude-standard` (90 archivos, sin `.env` ni `data/`) en
+  un directorio temporal nuevo, con un venv nuevo, siguiendo el README al pie de la letra. Todos
+  los pasos dieron código 0: pytest 1071 passed, `verificar_payloads.py` 10/10, `/leads/estado`,
+  `/leads/resumen`, CLI (incluido un reproceso real de un evento forzado a `fallido`) y apagado
+  limpio con SIGINT. Ninguna línea del log contenía datos personales. Los tiempos están en el
+  traspaso del Bloque 6.
+
+### 6.6 · Búsqueda de secretos
+- **[R]** Se escaneó el árbol versionable y **todo** el historial (`git log -p --all`: 16
+  commits, líneas de diff y mensajes). Patrones: tokens de bot de Telegram, claves de Anthropic,
+  OpenAI, Google, GitHub y AWS, JWT, `Bearer` literal, asignaciones `*TOKEN|*KEY|*SECRET*|*CLAVE*`,
+  ids de chat de Telegram, URLs con credenciales, claves privadas y archivos `.env` versionados.
+  El escáner nunca imprime valores: solo archivo, commit, tipo, longitud y si el valor tiene
+  marcas de dato ficticio. Los dudosos se revisaron con el valor enmascarado (solo su forma).
+- **Resultado:** **ningún secreto real**. Ningún `.env` se versionó nunca. Todas las
+  coincidencias son valores ficticios de tests (dobles con red bloqueada), URLs de dominios
+  reservados (`.example`, `.test`) usadas para comprobar que se rechazan, o falsos positivos
+  (en `.env.example` la regex tomó el nombre de la variable siguiente a una vacía). Los JSON de
+  n8n solo contienen ids internos de credenciales de n8n (no son secretos) y el marcador
+  `REEMPLAZAR_CHAT_ID`.
+- **[L]** El escaneo es por patrones. No cubre un secreto con un formato desconocido sin nombre
+  de variable que lo delate. El `.env` local del autor **no se leyó** (regla de `CLAUDE.md`).
