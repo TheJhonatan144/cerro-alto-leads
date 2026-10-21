@@ -1,12 +1,13 @@
 {
-  "descripcion": "Estado y ruta esperados de cada payload con LLM_PROVIDER=none, enviados en orden a una base vacía. Derivado de test_etapa_clasificar.py::test_diez_payloads_con_provider_none y test_trabajador.py::test_diez_payloads_con_el_trabajador_real; lo comprueba tests/test_verificar_payloads.py. evento_02 repite el event_id de evento_01, así que su estado es el del 01.",
+  "descripcion": "Estado y ruta esperados de cada payload con LLM_PROVIDER=none, enviados en orden a una base vacía. Derivado de test_etapa_clasificar.py::test_diez_payloads_con_provider_none y test_trabajador.py::test_diez_payloads_con_el_trabajador_real; lo comprueba tests/test_verificar_payloads.py. evento_02 repite el event_id de evento_01, así que su estado es el del 01. Un evento con rutas_aceptadas admite cualquiera de ellas en el verificador; el resto exige su ruta exacta.",
   "archivos": {
     "evento_01.json": {"estado": "procesado", "ruta": "caliente"},
     "evento_02.json": {"estado": "procesado", "ruta": "caliente"},
     "evento_03.json": {"estado": "duplicado", "ruta": null},
     "evento_04.json": {"estado": "procesado", "ruta": "tibio"},
     "evento_05.json": {"estado": "procesado", "ruta": "tibio"},
-    "evento_06.json": {"estado": "procesado", "ruta": "tibio"},
+    "evento_06.json": {"estado": "procesado", "ruta": "tibio", "rutas_aceptadas": ["tibio", "caliente"],
+                       "nota": "tibio sin la API de pacientes (tests, API no configurada); caliente con la API real, porque es paciente con tratamiento pendiente. scripts/verificar_payloads.py acepta cualquiera de rutas_aceptadas; ruta es la de sin API, la que exigen los tests."},
     "evento_07.json": {"estado": "procesado", "ruta": "caliente"},
     "evento_08.json": {"estado": "procesado", "ruta": "basura"},
     "evento_09.json": {"estado": "procesado", "ruta": "tibio"},

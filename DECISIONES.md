@@ -1041,7 +1041,7 @@ Horas reales declaradas por el autor: Fase 1 ≈ 2 h (18-oct). Parte A entre 12,
 Durante el desarrollo se expuso una credencial; el autor no recuerda con certeza de cuál se trató (token de la API de pacientes, secreto del webhook o token del bot de Telegram), por lo que se declara el estado de las tres:
 
 - **Secreto del webhook (`N8N_SECRETO`):** regenerado el 20-oct y actualizado en `.env` y en la credencial de n8n.
-- **Token de la API de pacientes:** NO se regeneró y NO se pudo revocar el anterior: el panel de la prueba solo ofrece copiar el token, no regenerarlo. El valor en uso está en `.env` (que no se versiona) y no aparece en el historial de git (comprobado el 21-oct). El autor lo considera de bajo impacto por ser un token de la prueba técnica, pero queda declarado como riesgo residual.
+- **Token de la API de pacientes:** NO se regeneró y NO se pudo revocar el anterior: el panel de la prueba solo ofrece copiar el token, no regenerarlo. El valor en uso está en `.env` (que no se versiona) y no aparece en el historial de git (comprobado el 21-oct). El autor lo considera de bajo impacto por ser un token de la prueba técnica, pero queda declarado como riesgo residual. El 21-oct el valor volvió a quedar expuesto al pegarse en una conversación con el asistente de IA al copiar un script; se detectó antes de commitear y se comprobó, con un escaneo del árbol de trabajo, que no llegó a ningún archivo versionado.
 - **Token del bot de Telegram:** no se ha regenerado en BotFather; vive solo en la credencial de n8n y no está en el repositorio.
 
 El resultado del escaneo de secretos del Bloque 6.6 está más abajo.
@@ -1135,3 +1135,59 @@ Prueba real (21-oct, ejecutada por el autor): 1 petición de búsqueda, HTTP 200
   existente dependía de `revisar_vencidos` sin destino.
 - **Hallazgos 2 y 3, documentados:** limitaciones [9] (escritura parcial del archivo) y [10]
   (`KeyboardInterrupt` en la transacción de vencimiento), en "Limitaciones conocidas".
+
+## Bloque 6.10 · `forma_inesperada` intermitente y evento 06
+
+### Observación del autor con la API real (21-oct)
+- En dos corridas de los 10 payloads, una consulta de cada corrida (≈1 de 9 consultas) dio
+  `origen=api_pacientes codigo=forma_inesperada`, y en un evento distinto cada vez: el 06 en la
+  corrida 1 y el 07 en la corrida 2. En la corrida 2, el evento 06 se enriqueció bien, y la
+  búsqueda del evento 06 valida bien al repetirla (`~/diag_forma.py`, Bloque 6.9).
+- **Causa no identificada.**
+- Efecto: el evento 06 (paciente con tratamiento pendiente, caliente por reglas) se quedó en la
+  corrida 1 sin enriquecer, salió tibio y su aviso se perdió.
+
+### Cambio (`enriquecimiento.py`)
+- **[R]** `forma_inesperada`, tanto en la búsqueda como en `/tratamientos`, se trata como fallo
+  transitorio. La etapa lanza `Reprogramar` y el trabajador repite la etapa entera más tarde,
+  sin gastar intento. Es el mismo mecanismo que el 429 y el limitador local (D6), con el mismo
+  tope: `MAX_REPROGRAMACIONES` (3). Ese contador es del trabajo, así que lo comparten 429,
+  limitador y forma.
+- **[R]** Al agotar las reprogramaciones, el comportamiento es el de antes: `no_disponible` con
+  el motivo de `forma_inesperada`, el lead sigue con reglas y la incidencia se registra **una**
+  vez, al agotar (no una por vuelta).
+- **[D]** La espera entre vueltas es una constante del código, `ESPERA_REPROGRAMAR_S = 5`, sin
+  variable de entorno nueva. En el peor caso, un evento tarda ~15 s más antes de degradar.
+- **[D]** No hay reintento corto dentro de la sesión: `forma_inesperada` sigue con
+  `transitorio=False`. Cada vuelta es una sesión nueva con su propio presupuesto de 30 s, y el
+  limitador es el del cliente, compartido. Un test comprueba que con el limitador sin cupo las
+  vueltas siguientes no hacen peticiones.
+- **[R]** Siguen igual:
+  - el 429 se reprograma con su `Retry-After`;
+  - un 5xx, un timeout o un error de red tienen un reintento corto y después `no_disponible`, sin
+    reprogramar (D5);
+  - un 400 o un 401 dan `no_disponible` directo.
+- Esto cambia la regla de D5 ("400 o forma inesperada: `no_disponible`") y la del 3.2 (secciones
+  5, 6 y 7: degrada en la primera vuelta). Ahora la forma inesperada degrada **tras** las
+  reprogramaciones.
+- **Tests ajustados por el cambio de regla**, con el mismo resultado final y además el número
+  exacto de peticiones (`VUELTAS_FORMA = 4`):
+  - `test_pacientes.py::test_400_json_invalido_o_forma_inesperada_degradan`, dividido en
+    `test_400_o_redireccion_degradan` (400 y 302, sin cambios) y
+    `test_json_invalido_o_forma_inesperada_degradan_tras_reprogramar`;
+  - `test_pacientes_3_2.py`: `test_32_sin_next_cursor_con_pagina_llena_es_forma_inesperada`,
+    `test_32_json_anidado_degrada_sin_gastar_intentos`, `test_32_paciente_id_invalido_no_se_guarda`
+    y `test_32_paciente_id_inseguro_degrada`.
+
+### Evento 06 en el verificador
+- **[R]** En `tests/esperado_payloads.json`, el evento 06 tiene `"rutas_aceptadas": ["tibio",
+  "caliente"]` y una nota que lo explica. Es tibio sin la API de pacientes y caliente con la API
+  real, porque es paciente con tratamiento pendiente.
+- **[R]** `ruta` sigue siendo `tibio`, la ruta sin API, que exigen los tests internos.
+- **[R]** `scripts/verificar_payloads.py` acepta cualquiera de `rutas_aceptadas`; el resto de
+  eventos exige su ruta exacta.
+
+### Limitación
+- **[L]** Si la API devolviera una forma inválida **de forma permanente** para un paciente, se
+  hacen las 3 reprogramaciones (4 consultas) y después se degrada a `no_disponible`. El cambio
+  no corrige una respuesta inválida, solo absorbe la intermitente.

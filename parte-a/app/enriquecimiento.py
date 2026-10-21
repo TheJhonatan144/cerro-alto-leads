@@ -18,6 +18,10 @@ log = logging.getLogger("leads.enriquecimiento")
 NOMBRE = "enriquecer_paciente"
 PRESUPUESTO_S = 30.0  # la lease es de 60 s
 MAX_TIPOS = 5
+# Fallos que se reprograman antes de degradar (además de 429 y del limitador, que ya llegan
+# como Reprogramar). Búsqueda y tratamientos: la etapa entera se repite.
+CODIGOS_REPROGRAMABLES = ("forma_inesperada",)
+ESPERA_REPROGRAMAR_S = 5
 
 MOTIVOS = {
     "no_configurado": "API de pacientes no configurada",
@@ -70,6 +74,11 @@ def enriquecer_paciente(con, trabajo, ctx) -> None:
                 raise
             resultado = _no_disponible("limite_de_solicitudes", trabajo["evento_id"])
         except ApiNoDisponible as e:
+            # Bloque 6.10: la API real devolvió forma_inesperada de forma intermitente. Se
+            # reprograma como un 429 (sin gastar intento, hasta MAX_REPROGRAMACIONES) y solo al
+            # agotarlas se degrada y se registra la incidencia, una vez.
+            if e.codigo in CODIGOS_REPROGRAMABLES and trabajo["reprogramaciones"] < MAX_REPROGRAMACIONES:
+                raise Reprogramar(ESPERA_REPROGRAMAR_S) from None
             resultado = _no_disponible(e.codigo, trabajo["evento_id"])
     _guardar(con, trabajo["evento_id"], lead["lead_id"], resultado)
 

@@ -15,8 +15,8 @@ from app.pacientes import ClientePacientes
 from app.trabajador import Contexto
 
 from test_pacientes import (  # noqa: F401  (fixtures y helpers compartidos)
-    API, TOKEN, ApiFalsa, cliente, con, contexto, enr, lead, paciente, procesar, r429, recibir,
-    ruta_db, trabajo_de, tratamiento,
+    API, TOKEN, VUELTAS_FORMA, ApiFalsa, cliente, con, contexto, enr, lead, paciente, procesar,
+    procesar_agotando, r429, recibir, ruta_db, trabajo_de, tratamiento,
 )
 from app import config, db
 
@@ -182,9 +182,10 @@ def test_32_sin_next_cursor_con_pagina_corta_advierte(cliente, con, ruta_db):
 
 def test_32_sin_next_cursor_con_pagina_llena_es_forma_inesperada(cliente, con, ruta_db):
     pagina = {"data": [paciente("pac_1"), paciente("pac_2", "Otro"), paciente("pac_3", "Otro B")]}
-    api = ApiFalsa([], respuestas=[httpx.Response(200, json=pagina)])
+    api = ApiFalsa([], respuestas=[httpx.Response(200, json=pagina) for _ in range(VUELTAS_FORMA)])
     i = recibir(cliente, lead())
-    procesar(ruta_db, contexto(api))
+    procesar_agotando(ruta_db, contexto(api))  # 6.10: se reprograma antes de degradar
+    assert len(api.peticiones) == VUELTAS_FORMA
     assert enr(con, i)["estado_enriquecimiento"] == "no_disponible"
 
 
@@ -192,11 +193,12 @@ def test_32_sin_next_cursor_con_pagina_llena_es_forma_inesperada(cliente, con, r
 
 def test_32_json_anidado_degrada_sin_gastar_intentos(cliente, con, ruta_db):
     anidado = b"[" * 50_000 + b"]" * 50_000
-    api = ApiFalsa([], respuestas=[httpx.Response(200, content=anidado)])
+    api = ApiFalsa([], respuestas=[httpx.Response(200, content=anidado) for _ in range(VUELTAS_FORMA)])
     i = recibir(cliente, lead())
-    procesar(ruta_db, contexto(api))
+    procesar_agotando(ruta_db, contexto(api))  # 6.10: se reprograma antes de degradar
     t = trabajo_de(con, i)
-    assert t["estado"] == "hecho" and t["ultimo_error"] is None
+    assert t["estado"] == "hecho" and t["ultimo_error"] is None and t["intentos"] == 1
+    assert len(api.peticiones) == VUELTAS_FORMA
     assert enr(con, i)["estado_enriquecimiento"] == "no_disponible"
 
 
@@ -235,7 +237,7 @@ def test_32_campo_invalido_queda_null_con_advertencia(cliente, con, ruta_db, cam
 def test_32_paciente_id_invalido_no_se_guarda(cliente, con, ruta_db):
     api = ApiFalsa([paciente("p-1; DROP TABLE")], {})
     i = recibir(cliente, lead())
-    procesar(ruta_db, contexto(api))
+    procesar_agotando(ruta_db, contexto(api))  # 6.10: se reprograma antes de degradar
     e = enr(con, i)
     assert e["estado_enriquecimiento"] == "no_disponible" and e["paciente_id"] is None
     assert "DROP" not in "\n".join(con.iterdump())
@@ -271,7 +273,7 @@ def test_32_paciente_id_valido(cliente, con, ruta_db, pid):
 def test_32_paciente_id_inseguro_degrada(cliente, con, ruta_db, pid):
     api = ApiFalsa([paciente(pid)], {})
     i = recibir(cliente, lead())
-    procesar(ruta_db, contexto(api))
+    procesar_agotando(ruta_db, contexto(api))  # 6.10: se reprograma antes de degradar
     e = enr(con, i)
     assert e["estado_enriquecimiento"] == "no_disponible" and e["paciente_id"] is None
-    assert api.rutas() == ["/v1/pacientes"]  # nunca se construye la URL de tratamientos
+    assert api.rutas() == ["/v1/pacientes"] * VUELTAS_FORMA  # nunca se construye la URL de tratamientos

@@ -59,13 +59,28 @@ del entorno de la shell tiene prioridad sobre el `.env`. Un valor mal escrito o 
 
 `.env` está en `.gitignore`: nunca lo subas.
 
+### API de pacientes (opcional)
+
+Sin estas dos variables el sistema no consulta la API de pacientes y funciona igual, solo con
+los datos del lead. Para usar la API real, copia en el `.env` los datos de «Tu acceso a la API»
+de la prueba:
+
+```
+API_PACIENTES_URL=<URL base de la API>
+API_PACIENTES_TOKEN=<tu token personal>
+```
+
+La API admite 30 solicitudes por minuto por token y puede devolver 429 o respuestas
+irregulares; el sistema aplica su propio limitador, reintenta los fallos transitorios y, si no
+logra enriquecer el lead, lo procesa igualmente solo con reglas.
+
 ## 2. Tests
 
 ```bash
 python -m pytest -q
 ```
 
-Resultado esperado: todos en verde (**1123 passed** en el cierre del Bloque 6; tarda alrededor de
+Resultado esperado: todos en verde (**1144 passed** al cierre (21-oct); tarda alrededor de
 un minuto). Los tests no leen tu `.env`, bloquean cualquier conexión que no sea a loopback y usan
 dobles para la API de pacientes, el LLM, Telegram y n8n. El aviso de deprecación de
 `TestClient`/`httpx` es conocido y no afecta.
@@ -112,6 +127,9 @@ Envía los 10 archivos de `payloads/` en orden (pausa de 1 s), espera a que cada
 estar `pendiente` (como mucho 60 s por evento) y compara estado y ruta con
 `tests/esperado_payloads.json`. Imprime solo archivo, estado y ruta. Sale con código 0 si todo
 coincide y 1 si algo no coincide. Opciones: `--url`, `--pausa`, `--timeout`.
+Un solo evento admite dos rutas (`rutas_aceptadas` en el archivo de esperados), y el resto
+exige su ruta exacta. Evento 06: tibio sin la API de pacientes; caliente con la API real,
+porque es paciente con tratamiento pendiente.
 
 Salida esperada con `LLM_PROVIDER=none`:
 
@@ -201,11 +219,15 @@ Sin LLM (`LLM_PROVIDER` vacío o `none`), el sistema clasifica solo con reglas d
 Para activarlo:
 
 ```
-LLM_PROVIDER=anthropic        # o gemini, u openai
+LLM_PROVIDER=gemini           # también anthropic u openai (ver la nota de abajo)
 LLM_MODEL=<nombre exacto del modelo según tu proveedor>
 LLM_API_KEY=<tu clave>
 ```
 
+- **Verificado con un servicio real** (21-oct, por el autor): solo **Gemini**, con una
+  petición de `prueba_humo_real.py --llm` y con los 10 payloads de ejemplo (`fuente=llm`, salida
+  aceptada por el validador). Los adaptadores de Anthropic y de OpenAI están probados solo con
+  dobles.
 - Al LLM solo le llega el mensaje **enmascarado** (sin teléfonos, correos, documentos, enlaces ni
   el nombre), el servicio y la campaña. El texto del lead es un dato, nunca una instrucción.
 - Su salida se valida contra un esquema estricto. Las reglas son un piso: el LLM no puede bajar

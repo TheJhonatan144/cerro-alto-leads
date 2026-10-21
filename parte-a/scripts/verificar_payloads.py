@@ -7,7 +7,9 @@ Uso (con el servidor ya arrancado):
 Para cada archivo de payloads/ (en orden): POST a {url}/webhook/leads, y después consulta
 GET {url}/leads/estado?event_id=... hasta que el evento deje de estar 'pendiente' (máximo
 --timeout s por evento). Compara estado y ruta con tests/esperado_payloads.json, que supone
-LLM_PROVIDER=none. Imprime solo archivo, estado y ruta (nunca datos del lead). Sale con
+LLM_PROVIDER=none. Un evento con "rutas_aceptadas" admite cualquiera de ellas (evento 06:
+tibio sin la API de pacientes; caliente con la API real, porque es paciente con tratamiento
+pendiente); el resto exige su "ruta" exacta. Imprime solo archivo, estado y ruta (nunca datos del lead). Sale con
 código 0 si todo coincide, 1 si algo no coincide o falla, y 2 si los argumentos son inválidos.
 
 Solo biblioteca estándar: Python 3.10 o superior.
@@ -63,6 +65,15 @@ def _esperar_estado(base: str, event_id: str, timeout: float) -> tuple[str | Non
         time.sleep(0.25)
 
 
+def rutas_aceptadas(esp: dict) -> list:
+    return esp.get("rutas_aceptadas") or [esp.get("ruta")]
+
+
+def coincide(esp: dict | None, estado, ruta) -> bool:
+    """Estado exacto y ruta exacta, o una de 'rutas_aceptadas' si el evento las declara."""
+    return esp is not None and estado == esp.get("estado") and ruta in rutas_aceptadas(esp)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--url", default="http://127.0.0.1:8000", help="URL base del sistema")
@@ -114,10 +125,11 @@ def main(argv=None) -> int:
             print(f"{f.name}\t{error}")
             continue
         real = (estado.get("estado"), estado.get("ruta"))
-        ok = esp is not None and real == (esp.get("estado"), esp.get("ruta"))
+        ok = coincide(esp, *real)
         coinciden += ok
-        detalle = "OK" if ok else (f"NO COINCIDE (esperado {esp.get('estado')}/{esp.get('ruta') or '-'})"
-                                   if esp else "NO COINCIDE (sin esperado)")
+        detalle = "OK" if ok else (
+            f"NO COINCIDE (esperado {esp.get('estado')}/{'|'.join(r or '-' for r in rutas_aceptadas(esp))})"
+            if esp else "NO COINCIDE (sin esperado)")
         print(f"{f.name}\t{real[0]}\t{real[1] or '-'}\t{detalle}")
     print(f"{coinciden}/{len(enviados)} coinciden")
     return 0 if coinciden == len(enviados) else 1

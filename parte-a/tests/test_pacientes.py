@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config, db, enriquecimiento, trabajador
-from app.errores import Reprogramar
+from app.errores import MAX_REPROGRAMACIONES, Reprogramar
 from app.main import create_app
 from app.pacientes import ClientePacientes, Limitador
 from app.trabajador import Contexto, procesar_pendientes, reclamar_trabajo, recuperar_expirados
@@ -158,6 +158,18 @@ def trabajo_de(con, evento_id):
 
 def procesar(ruta_db, ctx, momento=None):
     return procesar_pendientes(ruta_db, momento or ahora(), ctx=ctx)
+
+
+# Bloque 6.10: forma_inesperada se reprograma hasta MAX_REPROGRAMACIONES antes de degradar.
+VUELTAS_FORMA = MAX_REPROGRAMACIONES + 1  # peticiones de búsqueda hasta degradar
+
+
+def procesar_agotando(ruta_db, ctx, paso_s=60):
+    """Procesa una vez y otra por cada reprogramación posible (avanzando el reloj)."""
+    momento = ahora()
+    for _ in range(VUELTAS_FORMA):
+        procesar(ruta_db, ctx, momento)
+        momento += timedelta(seconds=paso_s)
 
 
 # --- Coincidencias (D7) ----------------------------------------------------------------
@@ -400,20 +412,36 @@ def test_401_sin_reintento_y_log_error(cliente, con, ruta_db, caplog):
 
 @pytest.mark.parametrize("respuesta", [
     httpx.Response(400, json={"error": {"code": "bad_request", "message": "x"}}),
-    httpx.Response(200, content=b"<html>no es json</html>"),
-    httpx.Response(200, json={"data": "no es lista", "next_cursor": None}),
-    httpx.Response(200, json={"data": [{"id": "pac_1"}], "next_cursor": None}),
-    httpx.Response(200, json={"data": [], "next_cursor": 5}),
-    httpx.Response(200, json=[1, 2, 3]),
     httpx.Response(302, headers={"Location": "https://otro.test/"}),
 ])
-def test_400_json_invalido_o_forma_inesperada_degradan(cliente, con, ruta_db, respuesta):
+def test_400_o_redireccion_degradan(cliente, con, ruta_db, respuesta):
     api = ApiFalsa([], respuestas=[respuesta])
     i = recibir(cliente, lead())
     procesar(ruta_db, contexto(api))
     assert len(api.peticiones) == 1  # no reintenta ni sigue redirecciones
     assert enr(con, i)["estado_enriquecimiento"] == "no_disponible"
     assert trabajo_de(con, i)["estado"] == "hecho"
+
+
+# Bloque 6.10 (cambio de regla): antes degradaban en la primera vuelta; ahora se reprograman
+# hasta MAX_REPROGRAMACIONES y después degradan igual.
+@pytest.mark.parametrize("respuesta", [
+    httpx.Response(200, content=b"<html>no es json</html>"),
+    httpx.Response(200, json={"data": "no es lista", "next_cursor": None}),
+    httpx.Response(200, json={"data": [{"id": "pac_1"}], "next_cursor": None}),
+    httpx.Response(200, json={"data": [], "next_cursor": 5}),
+    httpx.Response(200, json=[1, 2, 3]),
+])
+def test_json_invalido_o_forma_inesperada_degradan_tras_reprogramar(cliente, con, ruta_db, respuesta):
+    api = ApiFalsa([], respuestas=[respuesta] * VUELTAS_FORMA)
+    i = recibir(cliente, lead())
+    procesar_agotando(ruta_db, contexto(api))
+    assert len(api.peticiones) == VUELTAS_FORMA  # una por vuelta: sin reintento corto ni redirecciones
+    e = enr(con, i)
+    assert e["estado_enriquecimiento"] == "no_disponible"
+    assert e["motivo"] == enriquecimiento.MOTIVOS["forma_inesperada"]
+    t = trabajo_de(con, i)
+    assert (t["estado"], t["reprogramaciones"]) == ("hecho", MAX_REPROGRAMACIONES)
 
 
 def test_404_en_tratamientos(cliente, con, ruta_db):
