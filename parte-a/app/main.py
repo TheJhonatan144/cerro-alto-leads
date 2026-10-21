@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app import config, db
 from app.normalizar import normalizar_event_id
+from app.despachador import Despachador, crear_canal
 from app.trabajador import Trabajador
 
 log = logging.getLogger("leads")
@@ -114,20 +115,27 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
                     "vacías): los leads quedarán con enriquecimiento=no_configurado")
     if cfg.llm_proveedor == "none":
         log.warning("LLM_PROVIDER=none: clasificación solo con reglas")
+    if cfg.avisos_canal == "archivo":
+        log.warning("avisos por canal archivo (%s): recepción no recibe notificaciones en tiempo real",
+                    cfg.avisos_archivo.name)
     ruta = Path(db_path) if db_path else cfg.db_path
     db.inicializar(ruta)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # WORKER_ACTIVO controla los dos hilos de fondo: trabajador y despachador de avisos.
         trabajador = Trabajador(ruta, cfg) if cfg.worker_activo else None
-        app.state.trabajador = trabajador
-        if trabajador:
-            trabajador.iniciar()
+        despacho = Despachador(ruta, crear_canal(cfg)) if cfg.worker_activo else None
+        app.state.trabajador, app.state.despachador = trabajador, despacho
+        for hilo in (trabajador, despacho):
+            if hilo:
+                hilo.iniciar()
         try:
             yield
         finally:
-            if trabajador:
-                await run_in_threadpool(trabajador.detener)
+            for hilo in (trabajador, despacho):
+                if hilo:
+                    await run_in_threadpool(hilo.detener)
 
     app = FastAPI(title="Leads Clínica Dental Cerro Alto", lifespan=lifespan)
     app.state.db_path = ruta

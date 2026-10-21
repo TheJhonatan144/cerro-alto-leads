@@ -152,6 +152,51 @@ CREATE TABLE IF NOT EXISTS clasificaciones (
     CHECK (fuente = 'reglas' OR (prompt_version IS NOT NULL AND prompt_hash IS NOT NULL))
 );
 
+-- Bandeja de salida de avisos (outbox). No guarda el texto: se renderiza al enviar desde la
+-- base. lease_hasta reserva el aviso mientras se envía (si el proceso muere, otro lo retoma).
+CREATE TABLE IF NOT EXISTS avisos (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    evento_id          INTEGER NOT NULL REFERENCES eventos(id),
+    tipo               TEXT NOT NULL CHECK (tipo IN ('lead_caliente', 'novedad_duplicado')),
+    canal              TEXT NOT NULL,
+    estado             TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'enviado', 'fallido')),
+    intentos           INTEGER NOT NULL DEFAULT 0 CHECK (intentos >= 0),
+    proximo_intento    TEXT NOT NULL,
+    lease_hasta        TEXT,
+    vence_at           TEXT NOT NULL,
+    vencido_notificado INTEGER NOT NULL DEFAULT 0 CHECK (vencido_notificado IN (0, 1)),
+    creado_at          TEXT NOT NULL,
+    enviado_at         TEXT,
+    latencia_s         REAL,
+    ultimo_error       TEXT,  -- solo el tipo de error
+    UNIQUE (evento_id, tipo),
+    CHECK ((estado = 'enviado') = (enviado_at IS NOT NULL)),
+    CHECK (estado = 'enviado' OR latencia_s IS NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_avisos_cola ON avisos(estado, proximo_intento);
+
+-- Primer mensaje de seguimiento para los tibios (lo envía recepción; Bloque 5b).
+CREATE TABLE IF NOT EXISTS seguimientos (
+    evento_id INTEGER PRIMARY KEY REFERENCES eventos(id),
+    lead_id   TEXT NOT NULL REFERENCES leads(lead_id),
+    mensaje   TEXT NOT NULL CHECK (length(mensaje) > 0 AND length(mensaje) < 500),
+    estado    TEXT NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'enviado', 'descartado')),
+    creado_at TEXT NOT NULL
+);
+
+-- Citas tentativas de los calientes (reglas de la ficha; no consultan una agenda real).
+CREATE TABLE IF NOT EXISTS citas_tentativas (
+    evento_id          INTEGER NOT NULL REFERENCES eventos(id),
+    orden              INTEGER NOT NULL CHECK (orden IN (1, 2)),
+    servicio_propuesto TEXT NOT NULL,
+    sede               TEXT NOT NULL CHECK (sede IN ('norte', 'valle')),
+    inicio             TEXT NOT NULL,
+    fin                TEXT NOT NULL,
+    precio_usd         INTEGER CHECK (precio_usd IS NULL OR precio_usd >= 0),
+    nota               TEXT NOT NULL,
+    PRIMARY KEY (evento_id, orden)
+);
+
 -- D4: mensaje nuevo de un duplicado con una señal caliente que el original no tenía. El
 -- Bloque 5 lo avisará como "actualización de un lead existente".
 CREATE TABLE IF NOT EXISTS novedades_duplicado (

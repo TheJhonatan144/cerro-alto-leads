@@ -145,7 +145,7 @@ def test_exito_trabajo_hecho_y_lead_creado(cliente, con, ruta_db):
     assert procesar_pendientes(ruta_db, ahora_tras_recibir()) == 1
     t = trabajo_de(con, i)
     assert t["estado"] == "hecho"
-    assert t["etapa"] == "clasificar_lead"  # última etapa (Bloque 4)
+    assert t["etapa"] == "enrutar_lead"  # última etapa (Bloque 5a, D15)
     assert t["intentos"] == 1 and t["lease_hasta"] is None
     e = evento(con, i)
     assert e["estado"] == "procesado" and e["ruta"] is not None  # Bloque 4 cierra el evento

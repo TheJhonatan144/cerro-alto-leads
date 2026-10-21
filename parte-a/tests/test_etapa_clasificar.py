@@ -394,8 +394,8 @@ def test_sin_novedad_si_el_duplicado_no_trae_nada_nuevo(cliente, con, ruta_db):
 
 
 def test_etapa_registrada_al_final():
-    assert [e.nombre for e in trabajador.ETAPAS] == [
-        "normalizar_y_duplicados", "enriquecer_paciente", "clasificar_lead"]
+    assert [e.nombre for e in trabajador.ETAPAS] == [  # D15 (Bloque 5a)
+        "normalizar_y_duplicados", "enriquecer_paciente", "clasificar_lead", "enrutar_lead"]
 
 
 # --- Configuración -----------------------------------------------------------------------------------

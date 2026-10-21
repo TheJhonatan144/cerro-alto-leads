@@ -2,16 +2,18 @@
 
 - Ignora eventos rechazados, fallidos o ya procesados. Nunca deja el evento sin ruta: si el
   LLM falla, clasifica solo con reglas.
-- Al terminar, el evento pasa a 'procesado' con su ruta (y motivo si es basura) en la misma
-  transacción que guarda la clasificación. Nunca pisa un rechazado ni un duplicado.
+- Guarda la clasificación; el cierre del evento ('procesado' con su ruta) lo hace la etapa
+  siguiente, enrutar_lead, junto con su aviso o seguimiento (D15).
 - Duplicados (D4): su mensaje nuevo se revisa solo con reglas; si trae una señal caliente que
-  el original no tenía, se registra una novedad. El estado y la ruta del duplicado no cambian.
+  el original no tenía, se registra una novedad y su aviso en la misma transacción. El estado
+  y la ruta del duplicado no cambian.
 - No guarda el mensaje (ni enmascarado) ni la respuesta cruda del LLM.
 """
 import json
 import logging
+from datetime import datetime, timezone
 
-from app import db, reglas
+from app import db, despachador, reglas
 from app.clasificacion import decidir_ruta, validar_salida_llm
 from app.enmascarar import contenido_para_llm
 from app.errores import MAX_REPROGRAMACIONES, Reprogramar, reportar_error
@@ -59,7 +61,7 @@ def clasificar_lead(con, trabajo, ctx) -> None:
     if ev is None:
         return
     if ev["estado"] == "duplicado":
-        return _revisar_duplicado(con, ev)
+        return _revisar_duplicado(con, ev, ctx)
     if ev["estado"] != "pendiente" or ev["lead_id"] is None:
         return  # rechazado, fallido o ya procesado
     lead = con.execute("SELECT * FROM leads WHERE lead_id = ?", (ev["lead_id"],)).fetchone()
@@ -132,11 +134,6 @@ def _guardar(con, ev, lead, decision, motivo, salida, fallo, ctx) -> None:
              ctx.cfg.llm_proveedor if usado_llm else None, ctx.cfg.llm_modelo if usado_llm else None,
              fallo, db.ahora_utc()),
         )
-        # Cierre del evento: solo si sigue pendiente (nunca pisa rechazado ni duplicado).
-        con.execute(
-            "UPDATE eventos SET estado = 'procesado', ruta = ?, motivo = ? WHERE id = ? AND estado = 'pendiente'",
-            (decision.ruta, motivo if decision.ruta == "basura" else None, ev["id"]),
-        )
         con.execute("COMMIT")
     except BaseException:
         if con.in_transaction:
@@ -145,7 +142,7 @@ def _guardar(con, ev, lead, decision, motivo, salida, fallo, ctx) -> None:
     log.info("evento=%s ruta=%s fuente=%s", ev["id"], decision.ruta, "llm" if salida else "reglas")
 
 
-def _revisar_duplicado(con, ev) -> None:
+def _revisar_duplicado(con, ev, ctx) -> None:
     nuevo = con.execute("SELECT lead_id, mensaje, servicio FROM lead_mensajes WHERE evento_id = ?",
                         (ev["id"],)).fetchone()
     if nuevo is None:
@@ -158,9 +155,20 @@ def _revisar_duplicado(con, ev) -> None:
     novedad = [s for s in SENALES_NOVEDAD if s in senales_nuevo and s not in senales_original]
     if not novedad:
         return
-    con.execute(
-        """INSERT INTO novedades_duplicado (evento_id, duplicado_de, lead_id, senales, creada_at)
-           VALUES (?, ?, ?, ?, ?) ON CONFLICT(evento_id) DO NOTHING""",
-        (ev["id"], ev["duplicado_de"], nuevo["lead_id"], json.dumps(novedad), db.ahora_utc()),
-    )
+    recibido = con.execute("SELECT received_at FROM eventos WHERE id = ?", (ev["id"],)).fetchone()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        con.execute(
+            """INSERT INTO novedades_duplicado (evento_id, duplicado_de, lead_id, senales, creada_at)
+               VALUES (?, ?, ?, ?, ?) ON CONFLICT(evento_id) DO NOTHING""",
+            (ev["id"], ev["duplicado_de"], nuevo["lead_id"], json.dumps(novedad), db.ahora_utc()),
+        )
+        # El aviso de la novedad, en la misma transacción (outbox).
+        despachador.crear_aviso(con, ev["id"], "novedad_duplicado", recibido["received_at"], ctx.cfg,
+                                ctx.reloj() if getattr(ctx, "reloj", None) else datetime.now(timezone.utc))
+        con.execute("COMMIT")
+    except BaseException:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
     log.info("evento=%s novedad de duplicado: %s", ev["id"], ",".join(novedad))

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import config, db, enriquecimiento, etapa_clasificar, procesador
+from app import config, db, enriquecimiento, etapa_clasificar, etapa_enrutar, procesador
 from app.errores import MAX_REPROGRAMACIONES, Reprogramar
 from app.llm import ClienteLLM, Prompt, cargar_prompt
 from app.pacientes import ClientePacientes
@@ -40,6 +40,7 @@ class Contexto:
     pacientes: ClientePacientes | None = None  # None: API no configurada
     llm: ClienteLLM | None = None              # None: LLM_PROVIDER=none (solo reglas)
     prompt: Prompt | None = None
+    reloj: Callable[[], datetime] | None = None  # lo fija procesar_pendientes; None = reloj real
 
     def cerrar(self) -> None:
         for cliente in (self.pacientes, self.llm):
@@ -66,12 +67,13 @@ def _normalizar_y_duplicados(con, trabajo, ctx: Contexto) -> None:
                                ventana_dias=ctx.cfg.duplicado_ventana_dias)
 
 
-# Orden de ejecución. Las siguientes (avisos, Bloque 5) se añaden aquí sin tocar el resto
-# del módulo. La última etapa cierra el evento (procesado con ruta).
+# Orden de ejecución (D15). La última etapa, enrutar_lead, cierra el evento ('procesado' con
+# ruta) en la misma transacción que su aviso o seguimiento.
 ETAPAS: list[Etapa] = [
     Etapa("normalizar_y_duplicados", _normalizar_y_duplicados),
     Etapa(enriquecimiento.NOMBRE, enriquecimiento.enriquecer_paciente),
     Etapa(etapa_clasificar.NOMBRE, etapa_clasificar.clasificar_lead),
+    Etapa(etapa_enrutar.NOMBRE, etapa_enrutar.enrutar_lead),
 ]
 
 
@@ -289,6 +291,7 @@ def procesar_pendientes(db_path: Path, ahora=None,
     ctx = ctx or crear_contexto(cfg or config.cargar_config())
     cfg = ctx.cfg
     reloj = _reloj(ahora)
+    ctx.reloj = reloj  # las etapas usan el mismo reloj que el trabajador
     con = db.conectar(db_path)
     try:
         ejecutados = 0

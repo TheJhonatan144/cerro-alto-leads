@@ -6,6 +6,7 @@ defecto; uno no vacío pero inválido hace fallar el arranque con el nombre de l
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -22,6 +23,9 @@ LLM_PROVEEDORES = ("none", "gemini", "anthropic", "openai")
 LLM_TIMEOUT_S_POR_DEFECTO = 10.0
 LLM_CONFIANZA_BASURA_POR_DEFECTO = 0.8
 WEBHOOK_MAX_BYTES_POR_DEFECTO = 262_144  # 256 KiB (D16)
+AVISOS_CANALES = ("archivo",)  # Telegram y n8n llegan en el Bloque 5b
+AVISOS_ARCHIVO_POR_DEFECTO = "data/avisos.jsonl"
+AVISO_PLAZO_S_POR_DEFECTO = 300
 
 # Rangos admitidos (mínimo, máximo), ambos incluidos.
 RANGO_DUPLICADO_VENTANA_DIAS = (1, 90)
@@ -33,6 +37,8 @@ RANGO_PACIENTES_MAX_PAGINAS = (1, 20)
 RANGO_LLM_TIMEOUT_S = (2.0, 30.0)
 RANGO_LLM_CONFIANZA_BASURA = (0.5, 1.0)
 RANGO_WEBHOOK_MAX_BYTES = (4096, 4_194_304)  # 4 KiB a 4 MiB
+RANGO_AVISO_PLAZO_S = (60, 3600)
+_FECHA = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _MODELO = re.compile(r"[A-Za-z0-9._:-]{1,100}")
 
 _ENTERO = re.compile(r"[+-]?[0-9]+")
@@ -62,6 +68,11 @@ class Config:
     llm_timeout_s: float = LLM_TIMEOUT_S_POR_DEFECTO
     llm_confianza_basura: float = LLM_CONFIANZA_BASURA_POR_DEFECTO
     webhook_max_bytes: int = WEBHOOK_MAX_BYTES_POR_DEFECTO
+    avisos_canal: str = "archivo"
+    avisos_archivo: Path = BASE_DIR / AVISOS_ARCHIVO_POR_DEFECTO
+    aviso_plazo_s: int = AVISO_PLAZO_S_POR_DEFECTO
+    feriados: tuple[date, ...] = ()
+    agenda_url: str | None = None
 
     @property
     def pacientes_configurada(self) -> bool:
@@ -172,6 +183,52 @@ def llm(entorno=None) -> tuple[str, str | None, str | None]:
     return proveedor, modelo, clave
 
 
+def _ruta(entorno, nombre: str, defecto: str) -> Path:
+    ruta = Path(_valor(entorno, nombre) or defecto)
+    return ruta if ruta.is_absolute() else BASE_DIR / ruta
+
+
+def avisos_canal(entorno=None) -> str:
+    entorno = os.environ if entorno is None else entorno
+    canal = _valor(entorno, "AVISOS_CANAL").lower() or "archivo"
+    if canal not in AVISOS_CANALES:
+        raise ConfigError("AVISOS_CANAL debe ser uno de: " + ", ".join(AVISOS_CANALES))
+    return canal
+
+
+def feriados(entorno=None) -> tuple[date, ...]:
+    """Fechas ISO (AAAA-MM-DD) separadas por coma. El error nombra la variable, no el valor."""
+    entorno = os.environ if entorno is None else entorno
+    valor = _valor(entorno, "FERIADOS")
+    if not valor:
+        return ()
+    fechas = []
+    for parte in valor.split(","):
+        parte = parte.strip()
+        if not _FECHA.fullmatch(parte):
+            raise ConfigError("FERIADOS debe ser una lista de fechas AAAA-MM-DD separadas por coma")
+        try:
+            fechas.append(date.fromisoformat(parte))
+        except ValueError:
+            raise ConfigError("FERIADOS contiene una fecha que no existe") from None
+    return tuple(sorted(set(fechas)))
+
+
+def agenda_url(entorno=None) -> str | None:
+    entorno = os.environ if entorno is None else entorno
+    valor = _valor(entorno, "AGENDA_URL")
+    if not valor:
+        return None
+    partes = urlsplit(valor)
+    if partes.scheme not in ("http", "https") or not partes.hostname:
+        raise ConfigError("AGENDA_URL debe ser una URL http(s) con host")
+    if partes.username or partes.password:
+        raise ConfigError("AGENDA_URL no debe llevar credenciales")
+    if any(c.isspace() for c in valor):
+        raise ConfigError("AGENDA_URL no debe contener espacios")
+    return valor
+
+
 def cargar_config(entorno=None) -> Config:
     entorno = os.environ if entorno is None else entorno
     return Config(
@@ -197,6 +254,11 @@ def cargar_config(entorno=None) -> Config:
                                       LLM_CONFIANZA_BASURA_POR_DEFECTO, RANGO_LLM_CONFIANZA_BASURA),
         webhook_max_bytes=_entero(entorno, "WEBHOOK_MAX_BYTES", WEBHOOK_MAX_BYTES_POR_DEFECTO,
                                   RANGO_WEBHOOK_MAX_BYTES),
+        avisos_canal=avisos_canal(entorno),
+        avisos_archivo=_ruta(entorno, "AVISOS_ARCHIVO", AVISOS_ARCHIVO_POR_DEFECTO),
+        aviso_plazo_s=_entero(entorno, "AVISO_PLAZO_S", AVISO_PLAZO_S_POR_DEFECTO, RANGO_AVISO_PLAZO_S),
+        feriados=feriados(entorno),
+        agenda_url=agenda_url(entorno),
     )
 
 

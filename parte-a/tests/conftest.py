@@ -12,7 +12,7 @@ VARIABLES = (
     "TRABAJO_LEASE_S", "TRABAJO_MAX_INTENTOS",
     "API_PACIENTES_URL", "API_PACIENTES_TOKEN", "PACIENTES_LIMITE_POR_MIN", "PACIENTES_MAX_PAGINAS",
     "LLM_PROVIDER", "LLM_MODEL", "LLM_API_KEY", "LLM_TIMEOUT_S", "LLM_CONFIANZA_BASURA",
-    "WEBHOOK_MAX_BYTES",
+    "WEBHOOK_MAX_BYTES", "AVISOS_CANAL", "AVISOS_ARCHIVO", "AVISO_PLAZO_S", "FERIADOS", "AGENDA_URL",
 )
 
 
@@ -33,12 +33,14 @@ def es_loopback(host) -> bool:
 
 
 @pytest.fixture(autouse=True)
-def entorno_aislado(monkeypatch):
+def entorno_aislado(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "rutas_dotenv", lambda: [])
     for nombre in VARIABLES:
         monkeypatch.delenv(nombre, raising=False)
-    # Sin hilo trabajador salvo en los tests que lo activan explícitamente.
+    # Sin hilos (trabajador y despachador) salvo en los tests que los activan explícitamente.
     monkeypatch.setenv("WORKER_ACTIVO", "0")
+    # Los avisos del canal archivo nunca van al data/ del repositorio.
+    monkeypatch.setenv("AVISOS_ARCHIVO", str(tmp_path / "avisos.jsonl"))
 
 
 @pytest.fixture(autouse=True)

@@ -598,3 +598,94 @@ Cada punto se demostró primero con un test que fallaba contra el código del 4.
 - Familias auditadas: `"a"`, `"a."`, `"a-"`, `"a@"`, `"@a"`, `"a@a."`, `".a"`, `"7"`, `"7."`, `"7 "`, `"1-"`, `"ab "`, `"A1 "`, `"AB 1"`, `"+5"`, `"+593 "`, `"0 "`, `", "`, `" no "`, `"no, "`, `"sin "`, `"ni "`, `"dolor "`, `"("`, `"["`, `"<<<"`, `"http://"`, `"www."`, `"https://a."`.
 - **[L]** Son patrones repetidos de una sola familia. No se probaron mezclas entre familias ni entradas generadas por fuzzing; el tope de 20 000 caracteres sigue acotando el peor caso de cualquier patrón no auditado.
 
+## Bloque 5a · Enrutado, cita tentativa, seguimiento y bandeja de avisos
+
+Implementado en:
+- `app/agenda.py` (cita tentativa, función pura);
+- `app/plantillas.py` (textos sin LLM);
+- `app/etapa_enrutar.py` (etapa `enrutar_lead`);
+- `app/despachador.py` (bandeja de avisos, política de reintentos, adaptadores e hilo).
+
+Tablas nuevas: `avisos`, `seguimientos` y `citas_tentativas`.
+
+### D15 · Orden de etapas y cierre transaccional (patrón outbox)
+- **[R]** `normalizar_y_duplicados` → `enriquecer_paciente` → `clasificar_lead` → **`enrutar_lead`**. El paso del evento a `procesado` (con `ruta`, y `motivo` si es basura) se movió de `clasificar_lead` al final de `enrutar_lead`, **en la misma transacción** que crea el aviso o el seguimiento. Un caliente nunca queda `procesado` sin su aviso registrado. Si algo falla antes del COMMIT, el evento sigue `pendiente` y la etapa se reintenta. Nunca se pisa un rechazado ni un duplicado.
+- **[R]** Caliente → citas tentativas y aviso `lead_caliente` (`vence_at` = recepción + `AVISO_PLAZO_S`). Tibio → seguimiento con su mensaje. Basura → nada (el motivo ya está registrado). Es idempotente: `UNIQUE(evento_id, tipo)` en los avisos, claves primarias en las citas y los seguimientos, y la etapa solo actúa si el evento sigue `pendiente`.
+- **[R]** La novedad de duplicado (D4) y su aviso `novedad_duplicado` se registran en la misma transacción, dentro de `clasificar_lead`. El duplicado no cambia de estado.
+- **[D]** Las etapas reciben el reloj del trabajador por `Contexto.reloj`, para que las citas se calculen con el mismo "ahora" que el resto del procesamiento (inyectable en los tests).
+
+### D12 · Cita tentativa (`agenda.proponer_citas`)
+- **[R]** Reglas de la ficha (fuente de verdad):
+  - horarios: Norte, de lunes a viernes 08:00-19:00 y sábado 08:00-13:00; Valle, de lunes a viernes 10:00-19:00 y sábado 09:00-14:00; domingos y feriados, cerrado;
+  - bloques de 30 minutos, y la cita debe **terminar** a más tardar a la hora de cierre;
+  - anticipación mínima de 2 h y máxima de 30 días;
+  - zona fija UTC-5, sin horario de verano.
+
+  Se proponen hasta 2 citas: la más próxima y la siguiente en otro día.
+- **[R]** Servicio del formulario → cita:
+
+  | Servicio | Cita propuesta | Duración | Precio (Ficha) |
+  |---|---|---|---|
+  | Limpieza | Limpieza dental | 60 min | USD 45 |
+  | Valoración, Otro (y servicio ausente o desconocido) | Valoración inicial | 30 min | USD 25, se descuenta del tratamiento si empieza dentro de 30 días |
+  | Blanqueamiento, Combo limpieza + blanqueamiento | Valoración inicial primero | 30 min | USD 25 |
+  | Ortodoncia | Valoración de ortodoncia | 30 min | sin costo de lunes a viernes por la promoción P2 (vigente hasta 2027-03-31); los sábados, USD 25 |
+  | Alineadores | Valoración de ortodoncia primero, **en Valle** | 30 min | igual que Ortodoncia |
+
+  El blanqueamiento exige una valoración en los últimos 3 meses y una limpieza en los últimos 6, que no se pueden verificar; la nota lo menciona. Los precios salen de una tabla de constantes con su fuente; nunca se inventan precios ni descuentos.
+- **[D] Sede:** la que **exige el servicio** (Valle para alineadores) tiene prioridad sobre la sede habitual del paciente. Después va la habitual (solo con coincidencia única) y, si no hay, Norte. Se aparta del orden pedido (habitual → exigida → Norte): proponer Norte a un paciente habitual de Norte para alineadores contradiría que los alineadores solo se hacen en Valle.
+- **[R]** Cada propuesta lleva la nota "tentativa, pendiente de confirmar disponibilidad real".
+- **[L] Sin agenda real:** la cita tentativa **no consulta ninguna agenda real**. El primer hueco por reglas puede estar ocupado; por eso es tentativa, y recepción la confirma.
+- **[L] Feriados:** **solo se conocen si se configuran** en `FERIADOS`. Sin configurarlos, un feriado nacional puede recibir una propuesta.
+
+### D11 · Aviso de lead caliente y plantillas (`plantillas.py`, sin LLM)
+- **[R]** Aviso caliente en texto plano (sin Markdown ni `parse_mode`), con:
+  - nombre, contacto principal (teléfono; si no hay, correo) y servicio;
+  - ruta y motivo legible;
+  - estado de paciente: "sí, con tratamiento pendiente", "sí", "no", "coincidencia ambigua" o "sin verificar", sin detalle clínico;
+  - las citas tentativas;
+  - los identificadores de evento y de lead, y la hora de recepción.
+
+  **No incluye el texto libre del lead.**
+- **[R]** Seguimiento de los tibios, estilo WhatsApp:
+  - menos de 500 caracteres, trato de tú, sin encabezados, tablas ni enlaces con formato;
+  - saludo con el nombre de pila, u "Hola" si no hay;
+  - solo hechos de la ficha (servicio, duración, precio, sedes); propone la cita tentativa o pregunta el día preferido;
+  - incluye `AGENDA_URL` como texto plano si está configurada;
+  - sin descuentos ni promociones salvo la P2 de la valoración de ortodoncia; sin consejos médicos ni promesas de resultados.
+- **[D]** Si el seguimiento no cabe en 500 caracteres (nombre o URL muy largos), se quita primero la frase de sedes y después el enlace. El nombre de pila se limita a 30 caracteres.
+- **[D]** En el seguimiento de la valoración inicial **no** se menciona que "se descuenta del tratamiento" (eso es un descuento, y en el seguimiento solo se permite la P2). En el aviso a recepción sí aparece, como dato de la ficha.
+- **[L]** El seguimiento siempre se redacta en español, aunque el lead escriba en otro idioma (el payload 04 está en portugués).
+- **[R]** Texto de novedad de duplicado ("Actualización de un lead existente"), con las señales nuevas y los identificadores, sin texto libre.
+
+### D13 · Despachador y política de reintentos
+- **[R]** Hilo propio iniciado y detenido en el lifespan, como el trabajador (cierre limpio con `is_alive()`; una excepción inesperada no lo mata; tras un reinicio retoma lo pendiente, porque todo está en la base). Cada 1 s: comprueba los vencidos, reclama atómicamente (`BEGIN IMMEDIATE`) el aviso pendiente más antiguo con `proximo_intento <= ahora`, lo renderiza **desde la base en el momento del envío** (el aviso no guarda el texto), lo envía con un presupuesto de 10 s y lo marca `enviado` con `latencia_s` = envío − recepción del evento.
+- **[R]** Reintentos tras cada fallo: **5 s, 15 s, 45 s y 90 s**, contados desde el momento del fallo; después, cada **120 s** hasta **10 intentos**. Agotados, el aviso queda `fallido` y se llama a `reportar_error("avisos", "aviso_fallido")`. Un `ErrorCanal("permanente")` va directo a `fallido`. Una excepción inesperada del adaptador cuenta como temporal (en `ultimo_error` solo va el tipo).
+- **[R]** Si pasa `vence_at` sin enviarse: `vencido_notificado = 1` y `reportar_error("avisos", "aviso_vencido")` **una sola vez**, sin datos personales. El aviso sigue intentándose.
+- **[D] Reserva por lease:** columna `lease_hasta` (30 s, mayor que el presupuesto de envío). Mientras se envía, el aviso sigue `pendiente` pero reservado; si el proceso muere, otro lo retoma al vencer la reserva. Las escrituras exigen el mismo `intentos` que al reclamar (protección contra un dueño perdido, como en los trabajos).
+- **[L] Semántica de "al menos una vez":** si el proceso muere después de enviar y antes de registrar "enviado", el aviso se reenvía al vencer la reserva, y recepción puede recibirlo dos veces. No hay deduplicación del lado del canal.
+- **[D]** `WORKER_ACTIVO` controla los dos hilos de fondo (trabajador y despachador).
+
+### D14 · Adaptadores de canal
+- **[R]** Interfaz `enviar(texto, aviso, presupuesto=None)`, que lanza `ErrorCanal("temporal" | "permanente", código)`, y un registro `ADAPTADORES` (nombre → fábrica). En 5a solo existe **"archivo"**: una línea JSON por aviso en `AVISOS_ARCHIVO` (por defecto `data/avisos.jsonl`), con permisos **0600** (se corrigen si el archivo ya existía) y directorios creados. Si el archivo no se puede escribir, es un error temporal. Telegram y n8n llegan en el 5b sobre la misma interfaz.
+- **[L]** El archivo de avisos **contiene datos personales** (nombre y contacto). Por defecto queda en `data/`, que está en `.gitignore`. No tiene rotación ni política de retención.
+
+### Configuración
+- **[R]** Variables validadas al arrancar:
+
+  | Variable | Validación | Defecto |
+  |---|---|---|
+  | `AVISOS_CANAL` | solo "archivo" | "archivo" |
+  | `AVISOS_ARCHIVO` | ruta | `data/avisos.jsonl` |
+  | `AVISO_PLAZO_S` | entero de 60 a 3600 | 300 |
+  | `FERIADOS` | fechas AAAA-MM-DD separadas por coma, que existan | ninguno |
+  | `AGENDA_URL` | http(s), sin credenciales ni espacios | opcional |
+
+  Aviso único al arrancar con el canal activo. Los tests nunca escriben en el `data/` del repositorio: `conftest` redirige `AVISOS_ARCHIVO` a un directorio temporal.
+
+### Resultados con los 10 payloads
+- **[Probado]** Con el test y con el servidor real: **2 avisos** (eventos 01 y 07, enviados por el canal archivo) y **5 seguimientos** (04, 05, 06, 09 y 10). El 08 (basura) no genera nada y el 03 (duplicado sin novedad), tampoco.
+
+### Esquema
+- **[R] Cambia:** tablas nuevas `avisos`, `seguimientos` y `citas_tentativas`. Sin migraciones: hay que borrar `data/leads.db*` antes de arrancar.
+
