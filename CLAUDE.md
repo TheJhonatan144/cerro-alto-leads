@@ -5,10 +5,14 @@ Stack: Python 3.12 + FastAPI + SQLite (sqlite3 estándar, sin ORM).
 ## Reglas duras
 - Nunca leas, pidas ni imprimas tokens o claves. `.env` jamás se sube.
 - No hagas push ni entregues la prueba: lo hace el usuario.
+- No añadas líneas Co-Authored-By ni atribución a Claude en los commits; los commits los hace
+  el usuario.
 - No llames a la API de pacientes real ni a servicios externos; usa dobles locales.
 - No modifiques `payloads/`, `enviar_payloads.py` ni documentos congelados.
 - No afirmes que algo funciona sin haberlo ejecutado: muestra comando y salida real.
-- Una sola implementación. Sin n8n, Redis ni microservicios sin justificarlo.
+- Una sola implementación. Redis y microservicios, no. n8n solo como adaptador OPCIONAL de
+  avisos y errores (Bloque 5): el núcleo no depende de él; si n8n falla, el aviso queda en la
+  salida persistente y en archivo.
 
 ## Forma de trabajar
 - Bloques pequeños: objetivo, cambios, cómo ejecutar, resultado esperado, explicación breve.

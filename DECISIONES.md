@@ -116,14 +116,14 @@ Implementado en `app/trabajador.py`. **[L]** Aún no hay API de pacientes, LLM n
 ### Un solo hilo
 - **[D]** Un único hilo demonio, iniciado en el `lifespan` de FastAPI si `WORKER_ACTIVO` no es `0` y detenido limpiamente al apagar (con un `Event` y `join`). Cuando no hay trabajo espera `WORKER_INTERVALO_S` con `Event.wait`, así se despierta al instante al apagar.
 - **Por qué un solo hilo:** la detección de duplicados necesita ver los eventos en orden de llegada (un evento solo puede ser duplicado de uno anterior ya procesado). Con varios hilos, dos eventos de la misma persona podrían procesarse a la vez y ninguno vería al otro. El volumen de una clínica no necesita más paralelismo.
-- **[D]** Un error inesperado del bucle (p. ej. `database is locked`) se registra solo por su tipo y el hilo sigue vivo: espera un intervalo y vuelve a intentar.
+- **[D]** Un error inesperado del bucle (p. ej. `database is locked`) se registra solo por su tipo y el hilo sigue vivo: espera un intervalo y vuelve a intentar. Desde el Bloque 2b.1 la espera también está dentro del manejo de errores.
 - **[L]** Con un solo proceso de uvicorn. Si se lanzaran varios (`--workers N`), habría varios hilos: el reclamo atómico evita que dos tomen el mismo trabajo, pero se perdería la garantía de orden. Se debe ejecutar con un único proceso.
 
 ### Cola, reclamo y lease
 - **[R]** `reclamar_trabajo(con, ahora)`: en `BEGIN IMMEDIATE` toma el trabajo `pendiente` más antiguo **por id** con `proximo_intento_at <= ahora`, lo pasa a `en_curso`, fija `lease_hasta = ahora + TRABAJO_LEASE_S` e incrementa `intentos`. El bloqueo de escritura garantiza que dos conexiones no reclamen el mismo trabajo.
 - **[R]** `recuperar_expirados(con, ahora)`: los `en_curso` con `lease_hasta < ahora` vuelven a `pendiente` con `proximo_intento_at = ahora`. Se ejecuta al arrancar y en cada vuelta del bucle. El intento interrumpido cuenta como intento.
 - **[D]** Si un trabajo con lease vencida ya agotó sus intentos (el proceso murió durante el último), pasa a `fallido` con error `LeaseVencido` en vez de volver a `pendiente`; así un evento que tumba el proceso no se reintenta para siempre.
-- **[D]** Protección contra un dueño perdido: las escrituras del trabajador sobre un trabajo exigen `estado = 'en_curso'` y el mismo `intentos` que al reclamarlo. Si la lease venció y el trabajo se volvió a reclamar, el ejecutor anterior ya no puede cerrarlo.
+- **[D]** Protección contra un dueño perdido: las escrituras del trabajador sobre un trabajo exigen `estado = 'en_curso'` y el mismo `intentos` que al reclamarlo. Si la lease venció y el trabajo se volvió a reclamar, el ejecutor anterior ya no puede cerrarlo. Desde el Bloque 2b.1 tampoco puede ejecutar más etapas (ver allí).
 - **[D]** Todas las funciones reciben `ahora` por parámetro; los tests controlan el tiempo sin esperas reales (salvo los del hilo real).
 
 ### Etapas
@@ -134,7 +134,7 @@ Implementado en `app/trabajador.py`. **[L]** Aún no hay API de pacientes, LLM n
 - **[L]** Las etapas futuras deberán comprobar el estado del evento: si la primera lo dejó `rechazado` o `duplicado`, no deben actuar sobre él.
 
 ### Reintentos
-- **[R]** Si una etapa lanza una excepción: se registra **solo el tipo** de error (sin el mensaje, que puede llevar datos del lead) y se guarda ese tipo en `ultimo_error`. Si `intentos < max_intentos`, vuelve a `pendiente` con `proximo_intento_at = ahora + espera`: **30 s, 2 min, 10 min, 30 min** (el último valor se repite).
+- **[R]** Si una etapa lanza una excepción: se registra **solo el tipo** de error (sin el mensaje, que puede llevar datos del lead) y se guarda ese tipo en `ultimo_error`. Si `intentos < max_intentos`, vuelve a `pendiente` con `proximo_intento_at = ahora + espera` (desde el Bloque 2b.1, `ahora` = hora del fallo): **30 s, 2 min, 10 min, 30 min** (el último valor se repite).
 - **[R]** Máximo **5 intentos** por defecto (`TRABAJO_MAX_INTENTOS`, guardado en `trabajos.max_intentos` al crear el trabajo). **Lease de 60 s** (`TRABAJO_LEASE_S`). Al agotarse: trabajo `fallido` y el evento pasa a `fallido` con motivo "Procesamiento fallido tras N intentos (<tipo de error>)", **solo si sigue `pendiente`**: nunca se pisa un `rechazado` ni un `duplicado`.
 - **[L]** Un trabajo en espera de reintento no bloquea a los siguientes: los más nuevos se procesan mientras tanto, y el orden de llegada deja de cumplirse para ese evento.
 
@@ -144,11 +144,11 @@ Implementado en `app/trabajador.py`. **[L]** Aún no hay API de pacientes, LLM n
 
 ### Respaldo del webhook (cambio respecto al Bloque 1.2)
 - **[D]** Si ocurre una excepción que no es de SQLite al interpretar el cuerpo durante la recepción, el cuerpo crudo se guarda como **`pendiente`** (antes `rechazado`), con `event_id NULL`, sin motivo y **con su trabajo**, para que el procesador lo intente por su cuenta con reintentos. Se registra solo el tipo de error. Si ese guardado también falla → 503.
-- **[L]** Ese evento pierde la deduplicación por `event_id`: si el conector lo reenvía, se guarda otra fila.
+- ~~**[L]** Ese evento pierde la deduplicación por `event_id`.~~ Corregido en el Bloque 2b.1: el trabajador vuelve a extraer el `event_id` (ver allí).
 
 ### Configuración y .env
 - **[R]** Todo se valida en `create_app` (`config.cargar_config`). Un valor ausente o vacío usa el defecto; uno no vacío pero inválido (texto donde va un entero, o `<= 0`) hace **fallar el arranque** con un mensaje que nombra la variable, sin repetir su valor. Nunca falla al procesar cada evento: el trabajador recibe los valores ya validados.
-- **[D]** `WORKER_ACTIVO` solo admite `0` o `1` (vacío = `1`). `DUPLICADO_VENTANA_DIAS = 0` ahora también es inválido (antes se aceptaba).
+- **[D]** `WORKER_ACTIVO` solo admite `0` o `1` (vacío = `1`). `DUPLICADO_VENTANA_DIAS = 0` ahora también es inválido (antes se aceptaba). Los rangos completos se fijaron en el Bloque 2b.1.
 - **[R]** Variables nuevas, con defectos: `WORKER_ACTIVO=1`, `WORKER_INTERVALO_S=1`, `TRABAJO_LEASE_S=60`, `TRABAJO_MAX_INTENTOS=5`. Todas en `.env.example`, vacías.
 - **[R]** Lector de `.env` con la librería estándar: líneas `CLAVE=VALOR`; ignora comentarios (`#`) y líneas vacías; no pisa variables ya definidas en el entorno. Busca primero `./.env` y luego `../.env` (relativos al directorio actual) y carga **solo el primero que encuentra**.
 - **[D]** Admite además un prefijo `export ` y comillas que envuelven todo el valor. **[L]** No admite comentarios al final de la línea (`CLAVE=valor # nota` deja `valor # nota`) ni valores en varias líneas.
@@ -156,3 +156,71 @@ Implementado en `app/trabajador.py`. **[L]** Aún no hay API de pacientes, LLM n
 
 ### Base de datos
 - **[R]** `trabajos` añade `etapa` (por defecto `'pendiente'` = ninguna completada), `max_intentos` (por defecto 5), `lease_hasta` y `CHECK (estado IN ('pendiente','en_curso','hecho','fallido'))`. Sin migraciones: hay que borrar `data/leads.db*` antes de arrancar.
+
+### Limitaciones conocidas del 2b
+- **[L]** Un trabajo en espera de reintento deja pasar a los siguientes: para ese evento se pierde el orden de llegada (y con él, la garantía de la detección de duplicados).
+- **[L]** Hay que ejecutar un solo proceso de uvicorn (sin `--workers N`): con varios procesos habría varios trabajadores y se perdería el orden de llegada.
+- **[L]** Las etapas futuras deben ignorar los eventos `rechazado` o `duplicado`: la primera etapa puede dejarlos así y el trabajo sigue su curso.
+- **[L]** Sin migraciones: si cambia el esquema hay que borrar la base (`data/leads.db*`) antes de arrancar.
+
+## Bloque 2b.1 · Correcciones tras la revisión del 2b
+
+Cada punto se demostró primero con un test que fallaba contra el código del 2b y después se corrigió. Los cinco defectos se reprodujeron. El esquema de la base **no** cambió.
+
+### 1. Re-extracción del event_id
+- **Defecto reproducido:** si el webhook fallaba al extraer el `event_id` (respaldo del 2b), el evento quedaba con `event_id NULL` para siempre: no se podía consultar por `event_id` y un reenvío del conector creaba un segundo lead.
+- **[D]** Primera etapa del trabajador (`procesar_evento`): si el evento no tiene `event_id`, se vuelve a extraer de `cuerpo_crudo` con la misma función que usa el webhook (`normalizar.normalizar_event_id`).
+  - Si se obtiene, se asigna en la misma transacción con `UPDATE OR IGNORE`, de modo que decide la restricción `UNIQUE`, no un `SELECT` previo.
+  - Si choca con el `UNIQUE`, el evento es un reenvío: queda `duplicado`, con `duplicado_de` = ese `event_id`, `lead_id` = el del original y motivo "Reenvío de un evento ya recibido (mismo event_id)", sin datos personales. Su propio `event_id` sigue `NULL`, porque lo tiene el original.
+  - Si la nueva extracción lanza una excepción inesperada, cuenta como error de la etapa: reintentos y, al agotarlos, `fallido`. Nunca `rechazado`, y el cuerpo crudo se conserva para reprocesar.
+  - Si el cuerpo realmente no trae `event_id`, el comportamiento no cambia (D3).
+- **[L]** Si el reenvío se procesa antes que su original, el `lead_id` del duplicado queda `NULL`: el original aún no tiene lead. `duplicado_de` sí es siempre consultable.
+
+### 2. Comprobación de dueño antes de cada etapa
+- **Defecto reproducido:** un ejecutor que había perdido el trabajo (reclamado por otro, o con la lease vencida) seguía ejecutando etapas; solo fallaba al cerrar.
+- **[D]** Antes de cada etapa se hace una escritura que exige el mismo `intentos`, `estado = 'en_curso'` y `lease_hasta >= ahora`, y que **renueva la lease** (`ahora + TRABAJO_LEASE_S`). Si afecta cero filas, se aborta sin ejecutar la etapa ("perdido"). Si guardar la etapa completada afecta cero filas, se interrumpe el recorrido.
+- **[D]** El trabajo abandonado se recupera por lease y continúa desde la última etapa guardada, en un intento nuevo.
+- **[L]** La comprobación ocurre entre etapas: una etapa que tarde más que la lease puede solaparse con otro ejecutor mientras corre. Por eso las etapas deben ser idempotentes, y la lease (60 s) debe ser mayor que la duración de cualquier etapa.
+
+### 3. Rangos de configuración y espera del bucle
+- **Defecto reproducido:** se aceptaban valores absurdos (p. ej. `WORKER_INTERVALO_S=100000000000000000000`), y con ese valor `Event.wait` lanzaba `OverflowError` fuera del `try` y **mataba el hilo**.
+- **[D]** Rangos, ambos extremos incluidos; fuera de rango, el arranque falla con un mensaje que nombra la variable:
+
+  | Variable | Tipo | Rango | Defecto |
+  |---|---|---|---|
+  | `DUPLICADO_VENTANA_DIAS` | entero | 1 a 90 | 7 |
+  | `WORKER_INTERVALO_S` | decimal | 0.1 a 60 | 1 |
+  | `TRABAJO_LEASE_S` | entero | 10 a 3600 | 60 |
+  | `TRABAJO_MAX_INTENTOS` | entero | 1 a 20 | 5 |
+  | `WORKER_ACTIVO` | 0 o 1 | — | 1 |
+
+- **[D]** `WORKER_INTERVALO_S` pasa a admitir decimales con punto; se rechazan exponentes, `inf` y `nan`.
+- **[D]** La espera del bucle está ahora dentro del `try`. Tras un error inesperado se espera una pausa fija de 1 s (`ESPERA_TRAS_ERROR_S`), que no depende de la configuración.
+
+### 4. Cierre con plazo
+- **Defecto reproducido:** si el hilo no terminaba dentro del plazo del `join`, se registraba igualmente "trabajador detenido".
+- **[D]** Tras el `join` se comprueba `is_alive()`. Si sigue vivo, se registra el aviso "trabajador no terminó a tiempo; se recuperará por lease" (y no el mensaje de detenido), y `detener()` devuelve `False`. El trabajo a medias queda `en_curso` y se recupera cuando vence su lease.
+
+### 5. Reintento desde la hora del fallo
+- **Defecto reproducido:** la espera se contaba desde el reclamo. Una etapa que tardaba 40 s y fallaba quedaba programada para "reclamo + 30 s", ya en el pasado, y se **volvía a reclamar al instante**, gastando un intento sin esperar.
+- **[D]** `ejecutar_trabajo` y `procesar_pendientes` aceptan un instante fijo o un reloj. El reloj se consulta antes de cada etapa y en el momento del fallo: `proximo_intento_at = hora del fallo + espera`.
+
+## Bloque 3 · Decisiones aprobadas, pendientes de implementar
+
+Estas decisiones están **aprobadas, pendientes de implementar en el Bloque 3**. Nada de esto existe aún en el código ni se ha probado.
+
+- **D5 · Fallo de la API de pacientes** (timeout, 5xx): un reintento corto dentro de la etapa. Si sigue fallando, el lead continúa con `enriquecimiento=no_disponible` y se avisa por el canal de errores, para no bloquear el aviso a recepción de menos de 5 minutos.
+  - **[L]** Ese lead no se enriquece después.
+- **D6 · Límite de solicitudes:** limitador local de 25 solicitudes por minuto. Ante un 429 se respeta `Retry-After` reprogramando el trabajo, sin gastar intentos y sin esperar dentro de la etapa. Un 401 no se reintenta: se avisa y se degrada como en D5.
+- **D7 · Varios pacientes con el mismo teléfono o correo:** solo se considera paciente si el nombre normalizado coincide. Si no, "coincidencia ambigua" y no se activa el criterio caliente de tratamiento pendiente.
+- **Tope de páginas por consulta:** 5, con advertencia si se alcanza.
+
+## Decisión transversal · Núcleo en código + n8n opcional
+
+- **[D]** El núcleo del sistema (recepción, persistencia, idempotencia, cola, etapas, reintentos) está en código Python. n8n solo podrá usarse como adaptador **opcional** de avisos y errores (Bloque 5): el núcleo no depende de él, y si n8n falla, el aviso queda en la salida persistente y en archivo. Redis y microservicios, no.
+- **Razones:** la idempotencia atómica (restricción `UNIQUE` + `ON CONFLICT` en una transacción), la cola persistente con lease y espera entre reintentos, los tests deterministas (con el reloj inyectado) y el arranque en 30 minutos son más fiables en código que en un flujo visual.
+- **Equivalencias con n8n**, para quien conozca la herramienta:
+  - *Error Trigger* = manejador central de errores del trabajador (registro del tipo de error, `ultimo_error`, paso a `fallido`).
+  - *Wait* y reintentos = espera entre reintentos del trabajador (30 s, 2 min, 10 min, 30 min; máximo 5).
+  - *IF / Switch* = enrutado por temperatura (bloque de clasificación).
+- **Estado:** previsto para el Bloque 5; todavía no hay flujos de n8n en el repositorio ni se ha ejecutado ninguno. Cuando se incluyan, esta línea pasará a: "flujos de n8n incluidos como opción, probados por el autor, no requeridos" (solo después de haberlos ejecutado).
