@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leads Cerro Alto · últimos 90 días</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f4f3ef;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink2: #52514e;
+  --ink3: #6b6a66;
+  --line: #e2e1db;
+  --grid: #ecebe6;
+  --accent: #184f95;
+  --s1: #2a78d6;   /* Facebook */
+  --s2: #eb6834;   /* Instagram */
+  --m1: #1baf7a;   /* motivo: timeout API */
+  --m2: #6250d6;   /* motivo: JSON inválido */
+  --ok: #008300;   /* en plazo */
+  --mal: #e87ba4;  /* fuera de plazo */
+  --cal: #184f95; --on-cal: #ffffff;
+  --tib: #86b6ef; --on-tib: #0b0b0b;
+  --bas: #c9c8c1; --on-bas: #0b0b0b;
+  --neutro: #8f8e88;
+  --banda: rgba(214, 150, 0, .16);
+  --banda-linea: #b87a00;
+  --alerta-bg: #fff4e0; --alerta-borde: #b45309; --alerta-ink: #5c2a05;
+  --info-bg: #eef3fb; --info-borde: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #121211; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --ink3: #9d9c92;
+    --line: #34342f; --grid: #2a2a27; --accent: #86b6ef;
+    --s1: #3987e5; --s2: #d95926; --m1: #199e70; --m2: #9085e9; --ok: #008300; --mal: #d55181;
+    --cal: #86b6ef; --on-cal: #0b0b0b; --tib: #3987e5; --on-tib: #0b0b0b; --bas: #55544f; --on-bas: #f0efec;
+    --neutro: #8a897f; --banda: rgba(230, 170, 30, .16); --banda-linea: #e0a21a;
+    --alerta-bg: #2b2112; --alerta-borde: #e0a21a; --alerta-ink: #f6dcae;
+    --info-bg: #17202c; --info-borde: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #121211; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --ink3: #9d9c92;
+  --line: #34342f; --grid: #2a2a27; --accent: #86b6ef;
+  --s1: #3987e5; --s2: #d95926; --m1: #199e70; --m2: #9085e9; --ok: #008300; --mal: #d55181;
+  --cal: #86b6ef; --on-cal: #0b0b0b; --tib: #3987e5; --on-tib: #0b0b0b; --bas: #55544f; --on-bas: #f0efec;
+  --neutro: #8a897f; --banda: rgba(230, 170, 30, .16); --banda-linea: #e0a21a;
+  --alerta-bg: #2b2112; --alerta-borde: #e0a21a; --alerta-ink: #f6dcae;
+  --info-bg: #17202c; --info-borde: #3987e5;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding: 16px; }
+header.top { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+h1 { font-size: 1.5rem; line-height: 1.2; margin: 0 0 4px; }
+.sub { margin: 0; color: var(--ink2); font-size: .9375rem; }
+button.tema {
+  font: inherit; font-size: .875rem; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; min-height: 40px; cursor: pointer;
+}
+button.tema:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--s1); outline-offset: 2px; }
+h2 { font-size: 1.1875rem; line-height: 1.3; margin: 0 0 6px; }
+h3 { font-size: 1rem; margin: 0 0 4px; }
+p { margin: 0 0 8px; }
+a { color: var(--accent); }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.tile .v { font-size: 1.75rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tile .l { color: var(--ink); font-size: .875rem; margin-top: 2px; }
+.tile .d { color: var(--ink2); font-size: .8125rem; margin-top: 2px; }
+
+.avisos { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 20px; }
+.aviso {
+  background: var(--alerta-bg); color: var(--alerta-ink); border-left: 5px solid var(--alerta-borde);
+  border-radius: 6px; padding: 10px 14px; font-size: .9375rem;
+}
+.aviso.info { background: var(--info-bg); border-left-color: var(--info-borde); color: var(--ink); }
+.aviso b { display: block; }
+.aviso a { color: inherit; font-weight: 600; }
+
+section.q { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+section.q > .lectura { color: var(--ink2); margin-bottom: 12px; max-width: 74ch; }
+section.q > .lectura strong { color: var(--ink); }
+.num { font-size: .75rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--ink3); margin-bottom: 2px; }
+.grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 14px; }
+.cajagr { position: relative; width: 100%; }
+.cajagr.alto { height: 300px; }
+.cajagr.medio { height: 260px; }
+.cajagr.bajo { height: 240px; }
+.cajagr canvas { max-width: 100%; }
+.tit { font-size: .875rem; font-weight: 600; margin: 0 0 6px; }
+.leyenda { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .8125rem; color: var(--ink2); margin: 0 0 8px; padding: 0; list-style: none; }
+.leyenda li { display: flex; align-items: center; gap: 6px; }
+.leyenda i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.nota { font-size: .8125rem; color: var(--ink3); margin: 8px 0 0; max-width: 80ch; }
+
+details.tabla { margin-top: 12px; font-size: .875rem; }
+details.tabla summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 6px 0; }
+.tw { overflow-x: auto; max-height: 340px; border: 1px solid var(--line); border-radius: 8px; margin-top: 6px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { position: sticky; top: 0; background: var(--surface); }
+
+.anom { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--banda-linea); border-radius: 10px; padding: 14px 16px; }
+.card.obs { border-top-color: var(--info-borde); }
+.card dl { margin: 8px 0 0; }
+.card dt { font-weight: 700; font-size: .875rem; margin-top: 10px; }
+.card dd { margin: 2px 0 0; color: var(--ink2); font-size: .9375rem; }
+.card dd strong { color: var(--ink); }
+.tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--banda); color: var(--ink); border: 1px solid var(--banda-linea); }
+.tag.info { background: var(--info-bg); border-color: var(--info-borde); }
+
+footer { color: var(--ink3); font-size: .8125rem; padding: 8px 0 24px; max-width: 90ch; }
+footer code { background: var(--line); padding: 1px 5px; border-radius: 4px; }
+
+@media (min-width: 760px) {
+  .wrap { padding: 24px; }
+  h1 { font-size: 1.875rem; }
+  .avisos { grid-template-columns: repeat(3, 1fr); }
+  .grid2 { grid-template-columns: 1fr 1fr; }
+  .anom { grid-template-columns: 1fr 1fr; }
+  .card.obs { grid-column: 1 / -1; }
+  .cajagr.alto { height: 340px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <h1>Leads de Cerro Alto: últimos {{n_dias}} días</h1>
+    <p class="sub">Del {{desde}} al {{hasta}} · {{total}} leads · horas de Quito</p>
+  </div>
+  <button class="tema" id="tema" type="button" aria-label="Cambiar tema de color">Tema: automático</button>
+</header>
+
+<div class="tiles" aria-label="Cifras principales">
+  <div class="tile"><div class="v">{{total}}</div><div class="l">leads recibidos</div><div class="d">≈{{prom_dia}} por día · {{pct_ig}}&nbsp;% Instagram</div></div>
+  <div class="tile"><div class="v">{{pct_calientes}}&nbsp;%</div><div class="l">son calientes</div><div class="d">{{calientes}} de {{procesados}} procesados</div></div>
+  <div class="tile"><div class="v">{{pct_cita_cal}}&nbsp;%</div><div class="l">de los calientes agendan cita</div><div class="d">{{citas_cal}} de {{calientes}}</div></div>
+  <div class="tile"><div class="v">{{pct_plazo}}&nbsp;%</div><div class="l">avisos en menos de 5 min</div><div class="d">{{fuera}} calientes esperaron 5 min o más</div></div>
+  <div class="tile"><div class="v">{{pct_fallidos}}&nbsp;%</div><div class="l">leads fallidos</div><div class="d">{{fallidos}} de {{total}}</div></div>
+</div>
+
+<div class="avisos" role="list">
+  <div class="aviso" role="listitem"><b>⚠ Instagram en cero {{n_dias_cero}} días</b>De {{cero_ini}} a {{cero_fin}} no entró ningún lead de Instagram. <a href="#anomalias">Ver qué pasó</a></div>
+  <div class="aviso" role="listitem"><b>⚠ Racha de timeouts</b>{{racha_n}} leads fallaron por timeout de la API de pacientes entre el {{racha_ini}} y el {{racha_fin}}. <a href="#anomalias">Ver qué pasó</a></div>
+  <div class="aviso info" role="listitem"><b>ⓘ Pico el {{pico_dia}}</b>{{pico_n}} leads, casi el doble de un lunes normal ({{lunes_prom}}). <a href="#anomalias">Ver detalle</a></div>
+</div>
+
+<!-- ================= 1 ================= -->
+<section class="q" aria-labelledby="q1">
+  <div class="num">Pregunta 1</div>
+  <h2 id="q1">¿Cuántos leads llegan por día, por plataforma y por campaña?</h2>
+  <p class="lectura">Entran <strong>≈{{prom_dia}} leads por día</strong>, repartidos casi mitad y mitad entre Facebook ({{pct_fb}}&nbsp;%) e Instagram ({{pct_ig}}&nbsp;%). El <strong>lunes es el día fuerte</strong> (≈{{dow_lun}} leads, contra ≈{{dow_entre}} de martes a viernes y ≈{{dow_fin}} el fin de semana). Sonrisa Blanca trae {{pct_c0}}&nbsp;% de los leads, Ortodoncia sin Excusas {{pct_c1}}&nbsp;% y Chequeo Anual {{pct_c2}}&nbsp;%.</p>
+
+  <p class="tit">Leads por día y plataforma</p>
+  <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--s1)"></i>Facebook</li><li><i style="background:var(--s2)"></i>Instagram</li><li><i style="background:var(--banda); border:1px solid var(--banda-linea)"></i>Anomalía marcada</li></ul>
+  <div class="cajagr alto"><canvas id="c-dia" role="img" aria-label="Columnas apiladas de leads por día, Facebook e Instagram. Instagram está en cero de {{cero_ini}} a {{cero_fin}} y el {{pico_dia}} hay un pico de {{pico_n}} leads."></canvas></div>
+
+  <div class="grid2">
+    <div>
+      <p class="tit">Leads por campaña y plataforma</p>
+      <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--s1)"></i>Facebook</li><li><i style="background:var(--s2)"></i>Instagram</li></ul>
+      <div class="cajagr bajo"><canvas id="c-camp" role="img" aria-label="Barras agrupadas de leads por campaña y plataforma."></canvas></div>
+    </div>
+    <div>
+      <p class="tit">Promedio de leads por día de la semana</p>
+      <div class="cajagr bajo" style="margin-top:28px"><canvas id="c-dow" role="img" aria-label="Barras con el promedio de leads por día de la semana. El lunes tiene el promedio más alto."></canvas></div>
+    </div>
+  </div>
+  <details class="tabla"><summary>Ver como tabla</summary><div class="tw" id="t-dia"></div><div class="tw" id="t-camp" style="margin-top:8px"></div></details>
+</section>
+
+<!-- ================= 2 ================= -->
+<section class="q" aria-labelledby="q2">
+  <div class="num">Pregunta 2</div>
+  <h2 id="q2">¿Qué proporción de cada campaña es caliente, tibia o basura?</h2>
+  <p class="lectura">En las tres campañas <strong>entre {{tib_min}}&nbsp;% y {{tib_max}}&nbsp;% de los leads son tibios</strong> y entre {{bas_min}}&nbsp;% y {{bas_max}}&nbsp;% son basura. <strong>Ortodoncia sin Excusas es la que más calientes aporta ({{cal1}}&nbsp;%)</strong>, contra {{cal0}}&nbsp;% de Sonrisa Blanca y {{cal2}}&nbsp;% de Chequeo Anual. Se cuentan solo los leads procesados; los duplicados, rechazados y fallidos no tienen clasificación.</p>
+  <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--cal)"></i>Caliente</li><li><i style="background:var(--tib)"></i>Tibio</li><li><i style="background:var(--bas)"></i>Basura</li></ul>
+  <div class="cajagr medio"><canvas id="c-ruta" role="img" aria-label="Columnas al 100&nbsp;% con la proporción de leads calientes, tibios y basura en cada campaña."></canvas></div>
+  <details class="tabla"><summary>Ver como tabla</summary><div class="tw" id="t-ruta"></div></details>
+</section>
+
+<!-- ================= 3 ================= -->
+<section class="q" aria-labelledby="q3">
+  <div class="num">Pregunta 3</div>
+  <h2 id="q3">¿Cuántos calientes terminan en cita y qué campaña convierte mejor?</h2>
+  <p class="lectura"><strong>{{citas_cal}} de {{calientes}} calientes ({{pct_cita_cal}}&nbsp;%) agendan cita.</strong> Sonrisa Blanca ({{conv0}}&nbsp;%) y Chequeo Anual ({{conv2}}&nbsp;%) convierten parecido; <strong>Ortodoncia sin Excusas convierte {{dif_sb_or}} puntos menos ({{conv1}}&nbsp;%)</strong> y esa diferencia no es casualidad (z = {{z_sb_or}}). Es decir: la campaña que más calientes trae es la que peor los convierte. Los tibios convierten ≈{{pct_cita_tib}}&nbsp;% en las tres.</p>
+  <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--cal)"></i>Caliente</li><li><i style="background:var(--tib)"></i>Tibio</li></ul>
+  <div class="cajagr medio"><canvas id="c-conv" role="img" aria-label="Barras con el porcentaje de leads calientes y tibios que agendan cita en cada campaña, con intervalo de confianza para los calientes."></canvas></div>
+  <p class="nota">Las líneas finas sobre las barras de calientes son el intervalo de confianza del 95&nbsp;% (Wilson). Si dos intervalos se solapan mucho, no se puede decir que una campaña gane a la otra: Chequeo Anual es indistinguible de Sonrisa Blanca (z = {{z_sb_ch}}).</p>
+  <details class="tabla"><summary>Ver como tabla</summary><div class="tw" id="t-conv"></div></details>
+</section>
+
+<!-- ================= 4 ================= -->
+<section class="q" aria-labelledby="q4">
+  <div class="num">Pregunta 4</div>
+  <h2 id="q4">¿Se cumple la promesa de avisar a recepción en menos de 5 minutos?</h2>
+  <p class="lectura"><strong>Se cumple en {{pct_plazo}}&nbsp;% de los calientes</strong> ({{dentro}} de {{calientes}}); {{fuera}} esperaron 5 minutos o más. La mediana es {{p50}}&nbsp;min, el percentil 90 es {{p90}}&nbsp;min y el peor caso fue {{max_min}}&nbsp;min. Semana a semana oscila entre ≈{{sem_min}}&nbsp;% y ≈{{sem_max}}&nbsp;%, sin tendencia a empeorar ni a mejorar, y ninguna hora, sede, plataforma o campaña concentra los retrasos de forma clara. Solo los calientes tienen aviso, por eso solo ellos se miden.</p>
+
+  <div class="grid2">
+    <div>
+      <p class="tit">Minutos hasta el aviso (calientes)</p>
+      <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--ok)"></i>En plazo (menos de 5 min)</li><li><i style="background:var(--mal)"></i>Fuera del plazo</li></ul>
+      <div class="cajagr bajo"><canvas id="c-hist" role="img" aria-label="Histograma de minutos hasta el aviso a recepción. La mayoría está entre 1 y 4 minutos; una cola llega a más de 10."></canvas></div>
+    </div>
+    <div>
+      <p class="tit">% de avisos en plazo, por semana</p>
+      <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--ok)"></i>% de calientes avisados en menos de 5 min</li></ul>
+      <div class="cajagr bajo"><canvas id="c-sem" role="img" aria-label="Línea con el porcentaje semanal de calientes avisados en menos de 5 minutos."></canvas></div>
+    </div>
+  </div>
+  <p class="nota">Semanas que empiezan en lunes. Se omiten semanas parciales con menos de 20 calientes.</p>
+  <details class="tabla"><summary>Ver como tabla</summary><div class="tw" id="t-hist"></div><div class="tw" id="t-sem" style="margin-top:8px"></div></details>
+</section>
+
+<!-- ================= 5 ================= -->
+<section class="q" aria-labelledby="q5">
+  <div class="num">Pregunta 5</div>
+  <h2 id="q5">¿Cómo está la salud del sistema: cuántos leads fallan, por qué y cuándo?</h2>
+  <p class="lectura"><strong>{{fallidos}} de {{total}} leads fallaron ({{pct_fallidos}}&nbsp;%)</strong>: {{fall_timeout}} por timeout de la API de pacientes y {{fall_json}} por JSON inválido del LLM. Los JSON inválidos son un goteo constante ({{json_sem_min}} a {{json_sem_max}} por semana). <strong>Los timeouts son los que se concentran:</strong> {{racha_n}} de los {{fall_timeout}} cayeron entre el {{racha_ini}} y el {{racha_fin}}. Aparte, {{duplicados}} leads ({{pct_dup}}&nbsp;%) eran duplicados y {{rechazados}} ({{pct_rech}}&nbsp;%) se rechazaron por no traer teléfono ni correo válido; eso es el sistema haciendo su trabajo, no una falla.</p>
+  <div class="tiles">
+    <div class="tile"><div class="v">{{procesados}}</div><div class="l">procesados</div><div class="d">{{pct_proc}}&nbsp;%</div></div>
+    <div class="tile"><div class="v">{{duplicados}}</div><div class="l">duplicados</div><div class="d">{{pct_dup}}&nbsp;%</div></div>
+    <div class="tile"><div class="v">{{rechazados}}</div><div class="l">rechazados</div><div class="d">{{pct_rech}}&nbsp;%</div></div>
+    <div class="tile"><div class="v">{{fallidos}}</div><div class="l">fallidos</div><div class="d">{{pct_fallidos}}&nbsp;%</div></div>
+  </div>
+  <p class="tit">Leads fallidos por día y motivo</p>
+  <ul class="leyenda" aria-hidden="true"><li><i style="background:var(--m1)"></i>Timeout de la API de pacientes</li><li><i style="background:var(--m2)"></i>JSON inválido del LLM</li><li><i style="background:var(--banda); border:1px solid var(--banda-linea)"></i>Anomalía marcada</li></ul>
+  <div class="cajagr medio"><canvas id="c-fall" role="img" aria-label="Columnas apiladas de leads fallidos por día y motivo. Entre el {{racha_ini}} y el {{racha_fin}} hay una racha de timeouts de la API de pacientes."></canvas></div>
+  <details class="tabla"><summary>Ver como tabla</summary><div class="tw" id="t-fall"></div></details>
+</section>
+
+<!-- ================= anomalías ================= -->
+<h2 id="anomalias" style="margin:24px 0 10px">Qué se salió de lo normal, y qué alerta lo habría avisado a tiempo</h2>
+<div class="anom">
+
+  <article class="card">
+    <span class="tag">Anomalía 1 · pérdida silenciosa</span>
+    <h3 style="margin-top:6px">Instagram en cero del {{cero_ini}} al {{cero_fin}}</h3>
+    <dl>
+      <dt>Qué pasó</dt>
+      <dd>El último lead de Instagram llegó el {{ig_ultimo}} y el siguiente recién el {{ig_vuelve}}: <strong>{{ig_hueco_h}} horas sin ninguno</strong> (el siguiente hueco más largo de todo el período es de {{ig_otro_hueco_h}}&nbsp;h). Facebook siguió normal en esos {{n_dias_cero}} días ({{fb_ventana}} leads; se esperaban ≈{{fb_esp}}), así que no fue una caída general de la demanda.</dd>
+      <dt>Qué costó</dt>
+      <dd>Se esperaban ≈{{esp_ig}} leads de Instagram: ≈{{esp_cal_ig}} calientes y ≈{{esp_cita_ig}} citas que no llegaron a recepción. El sistema no registró ningún error porque <strong>no entró nada</strong> que pudiera fallar.</dd>
+      <dt>Hipótesis (los datos no permiten confirmarla)</dt>
+      <dd>El conector de Instagram dejó de entregar eventos (token vencido, permiso revocado o webhook desuscrito) o la campaña estuvo pausada. Lo que sí está claro es que fue un corte de entrada, no un fallo del procesamiento.</dd>
+      <dt>Alerta que lo habría detectado</dt>
+      <dd><strong>«0 leads de una plataforma durante {{alerta_ig_h}} horas hábiles seguidas»</strong> (lunes a viernes, 8:00 a 20:00). Habría saltado el <strong>{{alerta_ig_dia}} a las {{alerta_ig_hora}}</strong>, el primer día del corte, en lugar de dejar correr {{ig_hueco_h}}&nbsp;horas sin leads. Probada sobre estos {{n_dias}} días, <strong>no se dispara en falso ninguna otra vez</strong> ({{alerta_falsas}} falsas alarmas en {{dias_habiles}} días hábiles normales y las dos plataformas).</dd>
+    </dl>
+  </article>
+
+  <article class="card">
+    <span class="tag">Anomalía 2 · racha de fallos</span>
+    <h3 style="margin-top:6px">Timeouts de la API de pacientes, {{racha_ini}} al {{racha_fin}}</h3>
+    <dl>
+      <dt>Qué pasó</dt>
+      <dd>En tres días hubo <strong>{{racha_n}} timeouts</strong>; el resto de los días el promedio es de {{base_to}} por día y el máximo de {{max_to_fuera}}. En esos días fallaron {{fallidos_racha}} de {{leads_racha}} leads ({{racha_rate}}&nbsp;%, contra {{resto_rate}}&nbsp;% en el resto del período). Un lead fallido queda sin clasificar y sin aviso a recepción hasta que alguien lo reprocese.</dd>
+      <dt>Hipótesis</dt>
+      <dd>La API de pacientes (sistema de la clínica) estuvo lenta o intermitente. Los JSON inválidos del LLM no cambiaron esos días, así que el problema está en la consulta de pacientes, no en la clasificación.</dd>
+      <dt>Alerta que lo habría detectado</dt>
+      <dd><strong>«{{alerta_to_w}} timeouts de la API de pacientes en 3 horas»</strong>. Habría saltado el <strong>{{alerta_to_dia}} a las {{alerta_to_hora}}</strong>, con {{to_despues}} de los {{racha_n}} fallos todavía por ocurrir, y sin una sola falsa alarma en los {{n_dias}} días. Con una regla más floja («3 en 24 horas») habría {{w24_falsas}} día normal con falsa alarma en estos {{n_dias}} días; una alerta que suena sin razón termina ignorada, por eso se afinó la ventana.</dd>
+    </dl>
+  </article>
+
+  <article class="card obs">
+    <span class="tag info">Observación · no es una falla</span>
+    <h3 style="margin-top:6px">El {{pico_dia}} llegaron {{pico_n}} leads</h3>
+    <dl>
+      <dd>Casi {{pico_x}} veces un lunes normal ({{lunes_prom}}). El aumento se reparte entre las tres campañas y las dos plataformas, así que no parece un error de registro ni de una sola campaña. Ese día {{pico_fuera}}&nbsp;% de los calientes ({{pico_cal}}) recibió el aviso fuera de plazo, igual que el resto del período: el sistema aguantó. <strong>Los datos no explican la causa</strong>; lo útil es preguntar a marketing si hubo una acción puntual ese día. No necesita alerta, pero sí confirma que el sistema tiene margen para casi el doble de carga.</dd>
+    </dl>
+  </article>
+</div>
+
+<footer>
+  <p><strong>Cómo leerlo.</strong> «Lead caliente/tibio/basura» es la ruta que asignó el sistema. «Cita» es el campo <code>cita_agendada</code> del archivo. «Aviso» es <code>minutos_hasta_aviso</code> y solo existe para calientes. Las horas se muestran como vienen en el archivo (Quito, -05:00).</p>
+  <p><strong>Límites.</strong> Las hipótesis sobre causas no están demostradas con estos datos. En {{ciudad_vacia}}&nbsp;% de los leads falta la ciudad y en {{paciente_vacio}} falta si ya era paciente; no afecta a ninguna cifra de esta página. Los números del texto salen del archivo con <code>generar_dashboard.py</code>; si cambia el CSV, se vuelve a generar la página.</p>
+</footer>
+</div>
+
+<script>/*CHARTJS*/</script>
+<script>
+const D = /*DATOS*/null;
+</script>
+<script>
+(function () {
+  "use strict";
+  const MES = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
+  const DOW = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
+  const DOW_C = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
+  const miles = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const dec = (x, d = 1) => x.toFixed(d).replace(".", ",");
+  const corta = iso => { const [y, m, d] = iso.split("-").map(Number); return d + " " + MES[m - 1]; };
+  const larga = iso => { const t = new Date(iso + "T12:00:00"); return DOW[(t.getDay() + 6) % 7] + " " + corta(iso); };
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  /* ---------- tablas (vista alternativa de cada gráfico) ---------- */
+  function tabla(id, cab, filas, titulo) {
+    const el = document.getElementById(id);
+    el.innerHTML = '<table><caption style="text-align:left;padding:6px 10px;font-weight:600">' + titulo + '</caption><thead><tr>' +
+      cab.map(c => "<th scope=\"col\">" + c + "</th>").join("") + "</tr></thead><tbody>" +
+      filas.map(f => "<tr>" + f.map((c, i) => i === 0 ? "<th scope=\"row\" style=\"font-weight:400\">" + c + "</th>" : "<td>" + c + "</td>").join("") + "</tr>").join("") +
+      "</tbody></table>";
+  }
+  tabla("t-dia", ["Día", "Facebook", "Instagram", "Total"], D.dias.map((d, i) => [larga(d), D.fb[i], D.ig[i], D.total_dia[i]]), "Leads por día y plataforma");
+  tabla("t-camp", ["Campaña", "Facebook", "Instagram", "Total"], D.campanas.map((c, i) => [c, miles(D.camp_plat.facebook[i]), miles(D.camp_plat.instagram[i]), miles(D.camp_total[i])]), "Leads por campaña y plataforma");
+  tabla("t-ruta", ["Campaña", "Procesados", "Calientes", "Tibios", "Basura"], D.campanas.map((c, i) => [c, miles(D.proc_camp[i])].concat(["caliente", "tibio", "basura"].map(r => miles(D.ruta_camp[r][i]) + " (" + dec(D.ruta_camp[r][i] / D.proc_camp[i] * 100) + " %)"))), "Ruta por campaña");
+  tabla("t-conv", ["Campaña", "Calientes", "Con cita", "% cita calientes", "IC 95 %", "Tibios", "% cita tibios"],
+    D.conv_cal.map((c, i) => [c.campana, miles(c.n), miles(c.citas), dec(c.pct) + " %", dec(c.lo) + " – " + dec(c.hi) + " %", miles(D.conv_tib[i].n), dec(D.conv_tib[i].pct) + " %"]), "Conversión a cita");
+  tabla("t-hist", ["Minutos hasta el aviso", "Calientes"], D.hist_labels.map((l, i) => [l, D.hist[i]]), "Distribución de minutos hasta el aviso");
+  tabla("t-sem", ["Semana desde el lunes", "% en plazo", "Calientes"], D.sem_labels.map((l, i) => [l, dec(D.sem_pct[i]) + " %", D.sem_n[i]]), "Avisos en plazo por semana");
+  tabla("t-fall", ["Día", D.motivos[0], D.motivos[1]], D.dias.map((d, i) => [larga(d), D.fall_dia[D.motivos[0]][i], D.fall_dia[D.motivos[1]][i]]).filter(f => f[1] + f[2] > 0), "Leads fallidos por día y motivo (solo días con fallos)");
+
+  /* ---------- plugins ---------- */
+  // Bandas verticales sobre un eje de días: options.plugins.bandas = [{desde, hasta, etiqueta}]
+  const bandas = {
+    id: "bandas",
+    beforeDatasetsDraw(ch, _a, opt) {
+      if (!opt || !opt.lista) return;
+      const x = ch.scales.x, a = ch.chartArea, ctx = ch.ctx;
+      const paso = x.getPixelForValue(1) - x.getPixelForValue(0);
+      opt.lista.forEach(b => {
+        const i0 = D.dias.indexOf(b.desde), i1 = D.dias.indexOf(b.hasta);
+        const x0 = x.getPixelForValue(i0) - paso / 2, x1 = x.getPixelForValue(i1) + paso / 2;
+        ctx.save();
+        ctx.fillStyle = css("--banda"); ctx.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
+        ctx.restore();
+      });
+    },
+    afterDatasetsDraw(ch, _a, opt) {
+      if (!opt || !opt.lista) return;
+      const x = ch.scales.x, a = ch.chartArea, ctx = ch.ctx;
+      const paso = x.getPixelForValue(1) - x.getPixelForValue(0);
+      opt.lista.forEach(b => {
+        const i0 = D.dias.indexOf(b.desde), i1 = D.dias.indexOf(b.hasta);
+        const x0 = x.getPixelForValue(i0) - paso / 2, x1 = x.getPixelForValue(i1) + paso / 2;
+        ctx.save();
+        ctx.fillStyle = css("--ink"); ctx.font = "600 11px system-ui, sans-serif";
+        ctx.textBaseline = "top";
+        const t = b.etiqueta, w = ctx.measureText(t).width;
+        let tx = (x0 + x1) / 2 - w / 2;
+        tx = Math.max(a.left + 2, Math.min(a.right - w - 2, tx));
+        ctx.textAlign = "left"; ctx.fillText(t, tx, a.top + 3 + (b.nivel || 0) * 14);
+        ctx.restore();
+      });
+    }
+  };
+  // Etiqueta de valor sobre las columnas de un dataset que declare `valor: (v, i) => texto`
+  const valores = {
+    id: "valores",
+    afterDatasetsDraw(ch) {
+      const ctx = ch.ctx;
+      ch.data.datasets.forEach((ds, di) => {
+        if (!ds.valor) return;
+        const meta = ch.getDatasetMeta(di);
+        if (meta.hidden) return;
+        meta.data.forEach((el, i) => {
+          const v = ds.data[i];
+          if (v === null || v === undefined) return;
+          const txt = ds.valor(v, i);
+          ctx.save();
+          ctx.font = (ds.dentro ? "600 " : "500 ") + "12px system-ui, sans-serif";
+          ctx.textAlign = "center";
+          if (ds.dentro) {
+            const h = Math.abs(el.base - el.y);
+            if (h < 16) { ctx.restore(); return; }
+            ctx.fillStyle = css(ds.colorTexto); ctx.textBaseline = "middle";
+            ctx.fillText(txt, el.x, (el.y + el.base) / 2);
+          } else {
+            ctx.fillStyle = css("--ink"); ctx.textBaseline = "bottom";
+            const y = ds.yEtiqueta ? ds.yEtiqueta(i, el) : el.y;
+            ctx.fillText(txt, el.x, y - 4);
+          }
+          ctx.restore();
+        });
+      });
+    }
+  };
+  // Intervalo de confianza (barras de error) para el dataset 0 del gráfico de conversión
+  const ic = {
+    id: "ic",
+    afterDatasetsDraw(ch, _a, opt) {
+      if (!opt || !opt.lista) return;
+      const y = ch.scales.y, meta = ch.getDatasetMeta(0), ctx = ch.ctx;
+      meta.data.forEach((el, i) => {
+        const c = opt.lista[i];
+        ctx.save();
+        ctx.strokeStyle = css("--ink"); ctx.lineWidth = 1.5;
+        const y0 = y.getPixelForValue(c.lo), y1 = y.getPixelForValue(c.hi);
+        ctx.beginPath(); ctx.moveTo(el.x, y0); ctx.lineTo(el.x, y1);
+        ctx.moveTo(el.x - 5, y0); ctx.lineTo(el.x + 5, y0);
+        ctx.moveTo(el.x - 5, y1); ctx.lineTo(el.x + 5, y1); ctx.stroke();
+        ctx.restore();
+      });
+    }
+  };
+  // Línea vertical del plazo de 5 minutos en el histograma (entre la columna 4–5 y 5–6)
+  const umbral = {
+    id: "umbral",
+    afterDatasetsDraw(ch) {
+      const x = ch.scales.x, a = ch.chartArea, ctx = ch.ctx;
+      const px = (x.getPixelForValue(D.plazo - 1) + x.getPixelForValue(D.plazo)) / 2;
+      ctx.save();
+      ctx.strokeStyle = css("--ink"); ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+      ctx.setLineDash([]); ctx.fillStyle = css("--ink"); ctx.font = "600 11px system-ui, sans-serif";
+      ctx.textBaseline = "top"; ctx.textAlign = "left"; ctx.fillText("plazo: 5 min", px + 5, a.top + 2);
+      ctx.restore();
+    }
+  };
+
+  /* ---------- gráficos ---------- */
+  let charts = [];
+  function base(extra) {
+    const ink2 = css("--ink2"), grid = css("--grid"), surf = css("--surface"), ink = css("--ink");
+    return Object.assign({
+      responsive: true, maintainAspectRatio: false, animation: false,
+      layout: { padding: { top: 6, right: 6 } },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: surf, titleColor: ink, bodyColor: ink, borderColor: grid, borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true }
+      },
+      scales: {
+        x: { grid: { display: false }, border: { color: grid }, ticks: { color: ink2, font: { size: 11 } } },
+        y: { grid: { color: grid }, border: { display: false }, ticks: { color: ink2, font: { size: 11 } }, beginAtZero: true }
+      }
+    }, extra || {});
+  }
+  const mk = (id, cfg) => { const c = new Chart(document.getElementById(id), cfg); charts.push(c); return c; };
+
+  function dibujar() {
+    charts.forEach(c => c.destroy()); charts = [];
+    const surf = css("--surface"), s1 = css("--s1"), s2 = css("--s2");
+    const B = D.bandas, bw = window.innerWidth < 600 ? 0 : 1;
+
+    // 1a. leads por día
+    let o = base();
+    o.plugins.bandas = { lista: [
+      { desde: B.ig_cero[0], hasta: B.ig_cero[1], etiqueta: "Instagram en cero" },
+      { desde: B.pico, hasta: B.pico, etiqueta: "Pico: " + D.total_dia[D.dias.indexOf(B.pico)], nivel: 1 }
+    ] };
+    o.plugins.tooltip.callbacks = {
+      title: it => larga(D.dias[it[0].dataIndex]),
+      footer: it => "Total: " + D.total_dia[it[0].dataIndex]
+    };
+    o.scales.x.stacked = true; o.scales.y.stacked = true;
+    o.scales.y.max = Math.ceil(Math.max(...D.total_dia) * 1.25 / 20) * 20;
+    o.scales.x.ticks.callback = function (v) { return corta(D.dias[v]); };
+    o.scales.x.ticks.maxTicksLimit = 8; o.scales.x.ticks.maxRotation = 0;
+    o.scales.y.title = { display: true, text: "leads por día", color: css("--ink2"), font: { size: 11 } };
+    mk("c-dia", { type: "bar", plugins: [bandas],
+      data: { labels: D.dias, datasets: [
+        { label: "Facebook", data: D.fb, backgroundColor: s1, borderColor: surf, borderWidth: bw, borderRadius: 0, barPercentage: 1, categoryPercentage: .92 },
+        { label: "Instagram", data: D.ig, backgroundColor: s2, borderColor: surf, borderWidth: bw, borderRadius: { topLeft: 3, topRight: 3 }, barPercentage: 1, categoryPercentage: .92 }
+      ] }, options: o });
+
+    // 1b. campaña x plataforma
+    o = base({ interaction: { mode: "index", intersect: false } });
+    o.scales.y.max = Math.ceil(Math.max(...D.camp_plat.facebook, ...D.camp_plat.instagram) * 1.12 / 200) * 200;
+    o.scales.y.ticks.callback = v => miles(v);
+    mk("c-camp", { type: "bar", plugins: [valores],
+      data: { labels: D.campanas.map(c => c.split(" ").length > 2 ? [c.split(" ").slice(0, 2).join(" "), c.split(" ").slice(2).join(" ")] : [c.split(" ")[0], c.split(" ").slice(1).join(" ")]), datasets: [
+        { label: "Facebook", data: D.camp_plat.facebook, backgroundColor: s1, borderRadius: { topLeft: 4, topRight: 4 }, valor: v => miles(v) },
+        { label: "Instagram", data: D.camp_plat.instagram, backgroundColor: s2, borderRadius: { topLeft: 4, topRight: 4 }, valor: v => miles(v) }
+      ] }, options: o });
+
+    // 1c. día de la semana
+    o = base();
+    o.plugins.tooltip.callbacks = { title: it => DOW[it[0].dataIndex], label: c => dec(c.parsed.y) + " leads por día en promedio" };
+    o.scales.y.max = Math.ceil(Math.max(...D.por_dow) * 1.2 / 10) * 10;
+    mk("c-dow", { type: "bar", plugins: [valores],
+      data: { labels: DOW_C, datasets: [{ label: "Promedio por día", data: D.por_dow, backgroundColor: css("--neutro"), borderRadius: { topLeft: 4, topRight: 4 }, valor: v => String(Math.round(v)) }] }, options: o });
+
+    // 2. ruta por campaña, 100 %
+    o = base({ interaction: { mode: "index", intersect: false } });
+    o.scales.x.stacked = true; o.scales.y.stacked = true; o.scales.y.max = 100;
+    o.scales.y.ticks.callback = v => v + " %";
+    o.plugins.tooltip.callbacks = { label: c => c.dataset.label + ": " + dec(c.parsed.y) + " %" };
+    const pctRuta = r => D.ruta_camp[r].map((n, i) => n / D.proc_camp[i] * 100);
+    const segs = [["caliente", "Caliente", "--cal", "--on-cal"], ["tibio", "Tibio", "--tib", "--on-tib"], ["basura", "Basura", "--bas", "--on-bas"]];
+    mk("c-ruta", { type: "bar", plugins: [valores],
+      data: { labels: D.campanas.map((c, i) => [c, miles(D.proc_camp[i]) + " procesados"]), datasets: segs.map(([r, nombre, col, on], k) => ({
+        label: nombre, data: pctRuta(r), backgroundColor: css(col), borderColor: surf, borderWidth: 2, borderRadius: k === 2 ? { topLeft: 4, topRight: 4 } : 0, barPercentage: .62,
+        dentro: true, colorTexto: on, valor: v => dec(v) + " %"
+      })) }, options: o });
+
+    // 3. conversión a cita
+    o = base();
+    o.scales.y.max = 100; o.scales.y.ticks.callback = v => v + " %";
+    o.plugins.ic = { lista: D.conv_cal };
+    o.plugins.tooltip.callbacks = {
+      label: c => c.dataset.label + ": " + dec(c.parsed.y) + " % (" + (c.datasetIndex === 0 ? D.conv_cal[c.dataIndex].citas + " de " + D.conv_cal[c.dataIndex].n : D.conv_tib[c.dataIndex].citas + " de " + D.conv_tib[c.dataIndex].n) + ")",
+      afterLabel: c => c.datasetIndex === 0 ? "IC 95 %: " + dec(D.conv_cal[c.dataIndex].lo) + " a " + dec(D.conv_cal[c.dataIndex].hi) + " %" : ""
+    };
+    mk("c-conv", { type: "bar", plugins: [valores, ic],
+      data: { labels: D.campanas.map((c, i) => [c, miles(D.conv_cal[i].n) + " calientes · " + miles(D.conv_tib[i].n) + " tibios"]), datasets: [
+        { label: "Calientes", data: D.conv_cal.map(c => c.pct), backgroundColor: css("--cal"), borderRadius: { topLeft: 4, topRight: 4 }, valor: v => dec(v) + " %", yEtiqueta: (i) => 0 },
+        { label: "Tibios", data: D.conv_tib.map(c => c.pct), backgroundColor: css("--tib"), borderRadius: { topLeft: 4, topRight: 4 }, valor: v => dec(v) + " %" }
+      ] }, options: o });
+    // las etiquetas de calientes van sobre la barra de error, no encima de la barra
+    (function () {
+      const c = charts[charts.length - 1];
+      c.data.datasets[0].yEtiqueta = (i) => c.scales.y.getPixelForValue(D.conv_cal[i].hi);
+      c.update("none");
+    })();
+
+    // 4a. histograma de minutos
+    o = base();
+    o.scales.y.title = { display: true, text: "calientes", color: css("--ink2"), font: { size: 11 } };
+    o.scales.x.title = { display: true, text: "minutos hasta el aviso", color: css("--ink2"), font: { size: 11 } };
+    o.scales.x.stacked = true; o.scales.y.stacked = true; o.scales.x.ticks.maxRotation = 0; o.scales.x.ticks.autoSkip = false;
+    o.plugins.tooltip.callbacks = { title: it => it[0].label + " min", label: c => c.parsed.y !== null ? c.dataset.label + ": " + c.parsed.y + " calientes" : "" };
+    const cut = D.plazo;
+    mk("c-hist", { type: "bar", plugins: [umbral],
+      data: { labels: D.hist_labels, datasets: [
+        { label: "En plazo", data: D.hist.map((v, i) => i < cut ? v : null), backgroundColor: css("--ok"), borderRadius: { topLeft: 3, topRight: 3 }, barPercentage: .92, categoryPercentage: 1 },
+        { label: "Fuera del plazo", data: D.hist.map((v, i) => i >= cut ? v : null), backgroundColor: css("--mal"), borderRadius: { topLeft: 3, topRight: 3 }, barPercentage: .92, categoryPercentage: 1 }
+      ] }, options: o });
+
+    // 4b. % en plazo por semana
+    o = base();
+    o.scales.y.min = 0; o.scales.y.max = 100; o.scales.y.ticks.callback = v => v + " %"; o.scales.y.ticks.stepSize = 20;
+    o.scales.x.ticks.maxRotation = 0; o.scales.x.ticks.maxTicksLimit = 6;
+    o.plugins.tooltip.callbacks = { title: it => "Semana del " + it[0].label, label: c => dec(c.parsed.y) + " % en plazo (" + D.sem_n[c.dataIndex] + " calientes)" };
+    mk("c-sem", { type: "line", plugins: [],
+      data: { labels: D.sem_labels, datasets: [{ label: "% en plazo", data: D.sem_pct, borderColor: css("--ok"), backgroundColor: css("--ok"), borderWidth: 2, pointRadius: 4, pointBackgroundColor: css("--ok"), pointBorderColor: surf, pointBorderWidth: 2, tension: 0 }] }, options: o });
+
+    // 5. fallos por día y motivo
+    o = base();
+    o.plugins.bandas = { lista: [{ desde: B.timeouts[0], hasta: B.timeouts[1], etiqueta: "Racha de timeouts" }] };
+    o.plugins.tooltip.callbacks = { title: it => larga(D.dias[it[0].dataIndex]) };
+    o.scales.x.stacked = true; o.scales.y.stacked = true;
+    o.scales.x.ticks.callback = function (v) { return corta(D.dias[v]); };
+    o.scales.x.ticks.maxTicksLimit = 8; o.scales.x.ticks.maxRotation = 0;
+    o.scales.y.max = Math.max(...D.dias.map((_, i) => D.fall_dia[D.motivos[0]][i] + D.fall_dia[D.motivos[1]][i])) + 2;
+    o.scales.y.ticks.precision = 0; o.scales.y.title = { display: true, text: "leads fallidos por día", color: css("--ink2"), font: { size: 11 } };
+    mk("c-fall", { type: "bar", plugins: [bandas],
+      data: { labels: D.dias, datasets: [
+        { label: D.motivos[0], data: D.fall_dia[D.motivos[0]], backgroundColor: css("--m1"), borderColor: surf, borderWidth: 1, barPercentage: 1, categoryPercentage: .92 },
+        { label: D.motivos[1], data: D.fall_dia[D.motivos[1]], backgroundColor: css("--m2"), borderColor: surf, borderWidth: bw, borderRadius: { topLeft: 3, topRight: 3 }, barPercentage: 1, categoryPercentage: .92 }
+      ] }, options: o });
+  }
+
+  /* ---------- tema ---------- */
+  const raiz = document.documentElement, btn = document.getElementById("tema");
+  const orden = ["auto", "light", "dark"], nombres = { auto: "automático", light: "claro", dark: "oscuro" };
+  let modo = "auto";
+  try { modo = localStorage.getItem("tema-leads") || "auto"; } catch (e) {}
+  function aplicar() {
+    if (modo === "auto") raiz.removeAttribute("data-theme"); else raiz.setAttribute("data-theme", modo);
+    btn.textContent = "Tema: " + nombres[modo];
+    dibujar();
+  }
+  btn.addEventListener("click", () => {
+    modo = orden[(orden.indexOf(modo) + 1) % 3];
+    try { localStorage.setItem("tema-leads", modo); } catch (e) {}
+    aplicar();
+  });
+  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if (modo === "auto") dibujar(); });
+  aplicar();
+})();
+</script>
+</body>
+</html>
